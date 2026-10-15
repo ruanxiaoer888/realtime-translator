@@ -128,7 +128,13 @@ def transcribe(audio: np.ndarray, language: str = "pt", size: str = "small",
         language=language or None,
         beam_size=beam_size,
         vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 300, "speech_pad_ms": 100},
+        # speech_pad_ms 原来是 100（比 faster-whisper 默认 400 小得多），会在切句时
+        # 削掉词头 —— 真实字幕里 parafusadeira 被听成 usadeira / paposeira、
+        # "Hoje eu trouxe" 丢成 "hoje trouxe"、caixa 拼成 caja、标点全丢，
+        # 都是同一段音频的对比实验里 100 -> 400 之后一起好转的（详见
+        # tools\bench_asr_options.py）。耗时反而从 0.62s 降到 0.28s：留白够大时
+        # 相邻语音块会合并，调用次数变少。
+        vad_parameters={"min_silence_duration_ms": 300, "speech_pad_ms": 400},
         condition_on_previous_text=False,
         initial_prompt=(_asr_prompt or None) if use_prompt else None,
         no_speech_threshold=0.6,

@@ -61,7 +61,8 @@ ENGINE_MODES = {
 # 记住上次的选择（含引擎、市场、品类、目标语言、模型、框选区域等）
 SETTINGS_FILE = os.path.join(ROOT, "settings.json")
 SETTINGS_KEYS = ("market", "category", "target", "model", "engine",
-                 "interval", "font", "topmost", "clickthrough", "region")
+                 "interval", "font", "topmost", "clickthrough", "region",
+                 "chunk", "pause")
 
 # 「回复助手」的常用回复。中文说法是**调过的** —— 有些中文读法会让引擎译歪，
 # 例如「支持七天无理由退换」会译成 "Apoie sete dias..."（把"支持"当"拥护"），
@@ -180,6 +181,10 @@ class App:
                 self.var_engine.set(s["engine"])
             if isinstance(s.get("interval"), (int, float)):
                 self.var_interval.set(max(0.2, min(5.0, float(s["interval"]))))
+            if isinstance(s.get("chunk"), (int, float)):
+                self.var_chunk.set(max(0.8, min(6.0, float(s["chunk"]))))
+            if isinstance(s.get("pause"), (int, float)):
+                self.var_pause.set(max(0.25, min(1.5, float(s["pause"]))))
             if isinstance(s.get("font"), int):
                 self.var_font.set(max(10, min(60, int(s["font"]))))
             if isinstance(s.get("topmost"), bool):
@@ -202,6 +207,8 @@ class App:
             "model": self.var_model.get(),
             "engine": self.var_engine.get(),
             "interval": float(self.var_interval.get()),
+            "chunk": float(self.var_chunk.get()),
+            "pause": float(self.var_pause.get()),
             "font": int(self.var_font.get()),
             "topmost": bool(self.var_top.get()),
             "clickthrough": bool(self.var_clickthrough.get()),
@@ -439,6 +446,12 @@ class App:
         ttk.Label(bar2, text="每句最短(秒)").pack(side="left", padx=(14, 4))
         self.var_chunk = tk.DoubleVar(value=1.5)
         ttk.Spinbox(bar2, from_=0.8, to=6.0, increment=0.1, width=5, textvariable=self.var_chunk).pack(side="left")
+        # 断句静音：连续安静多久才算"这句说完了"。调小 = 出字幕快但容易断在半句话中间；
+        # 调大 = 等完整句，字幕更好懂但更慢。0.6 是"不切 0.4 秒换气"的默认值。
+        ttk.Label(bar2, text="断句静音(秒)").pack(side="left", padx=(14, 4))
+        self.var_pause = tk.DoubleVar(value=0.6)
+        ttk.Spinbox(bar2, from_=0.25, to=1.5, increment=0.05, width=5,
+                    textvariable=self.var_pause).pack(side="left")
         ttk.Label(bar2, text="翻译引擎").pack(side="left", padx=(14, 4))
         self.var_engine = tk.StringVar(value=self._default_engine())
         cb = ttk.Combobox(bar2, textvariable=self.var_engine,
@@ -717,11 +730,19 @@ class App:
             self.live_running = False
             return
 
-        # 每段最短时长由界面控制；停顿 0.35 秒即认为一句说完
+        # 每段最短/断句静音由界面控制（"每句最短(秒)"、"断句静音(秒)"）。
+        #
+        # 这里原来是 max_seconds = max(3.0, chunk*2) = 3.0、silence_seconds = 0.35，
+        # 结果不管主播有没有说完，每 3 秒就被强切一刀，0.35 秒的换气也算"这句完了" ——
+        # 真实字幕里大量"半句话"（"…a sua frente, tá?"、"de matos, oito chaves"），
+        # 每条又被单独送去翻译，没有上下文，中文自然读不通。
+        # 现在：最长 6 秒，断句静音默认 0.6 秒（不切 0.4 秒的换气），能等到完整句。
+        chunk = float(self.var_chunk.get())
+        pause = float(self.var_pause.get())
         seg = asr_engine.StreamingSegmenter(
-            max_seconds=max(3.0, float(self.var_chunk.get()) * 2.0),
-            min_seconds=float(self.var_chunk.get()),
-            silence_seconds=0.35,
+            max_seconds=max(6.0, chunk * 3.0),
+            min_seconds=chunk,
+            silence_seconds=pause,
             overlap_seconds=0.25,
         )
         while self.live_running:
