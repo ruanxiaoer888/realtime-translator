@@ -30,6 +30,12 @@ tmp/*cache*.json
 tmp/_*
 tmp/*.wav
 tmp/g*.txt
+# 打包用的 Python 安装程序（25 MB，不该进仓库；打包脚本会提示怎么下）
+tmp/*.exe
+
+# tools/collect_report.py 生成的诊断报告（含本机路径和设备名）
+诊断报告.txt
+自检结果.txt
 
 # ============================================================
 # Python 常规
