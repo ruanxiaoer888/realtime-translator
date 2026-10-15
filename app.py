@@ -62,7 +62,11 @@ ENGINE_MODES = {
 SETTINGS_FILE = os.path.join(ROOT, "settings.json")
 SETTINGS_KEYS = ("market", "category", "target", "model", "engine",
                  "interval", "font", "topmost", "clickthrough", "region",
-                 "chunk", "pause", "ocr")
+                 "chunk", "pause", "ocr", "overlay_x", "overlay_y")
+
+# 悬浮窗默认尺寸与落点（右下角上方，避开常见直播画面）
+OVERLAY_W, OVERLAY_H = 760, 150
+OVERLAY_FALLBACK = (120, 780)
 
 # 屏幕识别引擎（界面显示名 -> screen_translate 的取值）
 OCR_MODES = {
@@ -143,6 +147,7 @@ class App:
 
         self.ui_queue: queue.Queue = queue.Queue()
         self.region = None
+        self.overlay_pos = None            # (x, y)，None = 用默认落点
         self.screen_running = False
         self.screen_thread = None
         self.last_text = ""
@@ -200,6 +205,15 @@ class App:
                 self.var_top.set(s["topmost"])
             if isinstance(s.get("clickthrough"), bool):
                 self.var_clickthrough.set(s["clickthrough"])
+            ox, oy = s.get("overlay_x"), s.get("overlay_y")
+            if isinstance(ox, int) and isinstance(oy, int):
+                self.overlay_pos = (ox, oy)
+                # _build_overlay 是在本方法之前跑的，那时还不知道位置，
+                # 所以这里要把它挪过去，光记属性不够。
+                try:
+                    self.overlay.geometry(f"+{ox}+{oy}")
+                except Exception:
+                    pass
             r = s.get("region")
             if (isinstance(r, list) and len(r) == 4
                     and all(isinstance(x, int) for x in r) and r[2] > 8 and r[3] > 8):
@@ -224,6 +238,13 @@ class App:
             "clickthrough": bool(self.var_clickthrough.get()),
             "region": list(self.region) if self.region else None,
         }
+        # 悬浮窗位置单独取（它记在实例属性上，不在界面的 Var 里）
+        try:
+            x, y = self.overlay_pos if self.overlay_pos else (
+                self.overlay.winfo_x(), self.overlay.winfo_y())
+            data["overlay_x"], data["overlay_y"] = int(x), int(y)
+        except Exception:
+            pass
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -420,7 +441,7 @@ class App:
         ttk.Label(opt, text="刷新间隔(秒)").pack(side="left")
         self.var_interval = tk.DoubleVar(value=0.4)
         ttk.Spinbox(opt, from_=0.2, to=5.0, increment=0.1, width=5, textvariable=self.var_interval).pack(side="left", padx=(4, 14))
-        # 屏幕识别引擎：系统自带 OCR 实测约 10 毫秒/帧（本地模型约 1.3 秒），
+        # 屏幕识别引擎：系统自带 OCR 实测约 14 毫秒/帧（本地模型约 1.3 秒），
         # 但要先装对应语言包；没装就自动退回本地模型。
         ttk.Label(opt, text="屏幕识别").pack(side="left")
         self.var_ocr = tk.StringVar(value=OCR_MODES["自动（推荐）"])
@@ -435,6 +456,23 @@ class App:
         ttk.Checkbutton(opt, text="鼠标穿透", variable=self.var_clickthrough,
                         command=self.apply_clickthrough).pack(side="left", padx=(0, 14))
         ttk.Button(opt, text="翻译记录另存", command=self.save_log).pack(side="right")
+
+        # 悬浮窗位置微调 + 位置记忆。
+        # 为什么要有这一行：开了「鼠标穿透」之后悬浮窗收不到任何鼠标事件
+        # （WS_EX_TRANSPARENT 会把点击整个透过去），连它自己的 ✕ 和拖动都点不到，
+        # 于是窗口就"钉"在那儿挪不了了。这里给一套不依赖点击悬浮窗的移动方式。
+        pos = ttk.Frame(f1)
+        pos.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Label(pos, text="悬浮窗位置").pack(side="left")
+        for txt, dx, dy in (("◀", -24, 0), ("▲", 0, -24), ("▼", 0, 24), ("▶", 24, 0)):
+            ttk.Button(pos, text=txt, width=2,
+                       command=lambda a=dx, b=dy: self.nudge_overlay(a, b)
+                       ).pack(side="left", padx=1)
+        ttk.Button(pos, text="居中", command=self.center_overlay).pack(side="left", padx=(8, 0))
+        self.lbl_overlay_pos = ttk.Label(pos, text="", foreground="#8f93a8")
+        self.lbl_overlay_pos.pack(side="left", padx=10)
+        ttk.Label(pos, text="（鼠标穿透开着也能用这里挪；位置会记住）",
+                  foreground="#6f7385").pack(side="left")
 
         self.lbl_src_hdr = ttk.Label(f1, text="识别的原文", style="Header.TLabel")
         self.lbl_src_hdr.pack(anchor="w", padx=10, pady=(10, 2))
@@ -556,7 +594,8 @@ class App:
         for w in (header, self.lbl_overlay, wrap):
             w.bind("<Button-1>", self._drag_start)
             w.bind("<B1-Motion>", self._drag_move)
-        self.overlay.geometry("760x150+120+780")
+        x, y = self.overlay_pos or OVERLAY_FALLBACK
+        self.overlay.geometry(f"{OVERLAY_W}x{OVERLAY_H}+{int(x)}+{int(y)}")
         self.overlay.withdraw()
 
     # ---------------- 悬浮窗拖动 ----------------
@@ -567,6 +606,26 @@ class App:
         x = self.overlay.winfo_x() + e.x - self._dx
         y = self.overlay.winfo_y() + e.y - self._dy
         self.overlay.geometry(f"+{x}+{y}")
+        self.overlay_pos = (x, y)
+
+    # ---- 位置微调：鼠标穿透开着时悬浮窗点不到、拖不动，
+    #      所以主窗口必须留一套不依赖点击悬浮窗的移动方式 ----
+    def nudge_overlay(self, dx: int, dy: int):
+        self.overlay_pos = (self.overlay.winfo_x() + dx, self.overlay.winfo_y() + dy)
+        self.overlay.geometry(f"+{self.overlay_pos[0]}+{self.overlay_pos[1]}")
+        self._refresh_overlay_pos()
+
+    def center_overlay(self):
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.overlay_pos = ((sw - OVERLAY_W) // 2, max(0, sh - OVERLAY_H - 120))
+        self.overlay.geometry(f"{OVERLAY_W}x{OVERLAY_H}+{self.overlay_pos[0]}+{self.overlay_pos[1]}")
+        self._refresh_overlay_pos()
+
+    def _refresh_overlay_pos(self):
+        try:
+            self.lbl_overlay_pos.config(text=f"当前位置 {self.overlay.winfo_x()}, {self.overlay.winfo_y()}")
+        except Exception:
+            pass
 
     def hide_overlay(self):
         self.overlay.withdraw()
@@ -613,14 +672,16 @@ class App:
             return
         if on:
             self.lbl_live.config(
-                text="悬浮窗已开启鼠标穿透：点击会穿过去，悬浮窗自己点不到了。"
-                     "要关掉请回主窗口取消勾选「鼠标穿透」", foreground="#ffd166")
+                text="悬浮窗已开启鼠标穿透：点击会穿过去，悬浮窗自己也点不到、拖不动了。"
+                     "要挪位置用上面那排 ◀▲▼▶（不用关穿透）；要关掉勾选在这里取消「鼠标穿透」",
+                foreground="#ffd166")
         else:
-            self.lbl_live.config(text="悬浮窗鼠标穿透已关闭", foreground="#7ee787")
+            self.lbl_live.config(text="悬浮窗鼠标穿透已关闭，现在可以直接拖动悬浮窗", foreground="#7ee787")
 
     def show_overlay(self):
         self.overlay.deiconify()
         self.overlay.attributes("-topmost", True)
+        self._refresh_overlay_pos()
 
     # ---------------- 实时屏幕翻译 ----------------
     def pick_region(self):

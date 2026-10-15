@@ -7,7 +7,29 @@ $root = $PSScriptRoot
 if (-not $root) { $root = Split-Path -Parent $PSCommandPath }
 $app = Join-Path $root 'app.py'
 
+# Console window handle: used to minimize this black box once the GUI is up.
+# We keep the window (instead of closing it) because app.py errors need to show here.
+Add-Type -Namespace Tk -Name Win -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'@ -ErrorAction SilentlyContinue
+
+function Hide-Console {
+    try {
+        $h = [Tk.Win]::GetConsoleWindow()
+        if ($h -ne [IntPtr]::Zero) { [Tk.Win]::ShowWindow($h, 6) | Out-Null }   # 6 = SW_MINIMIZE
+    } catch { }
+}
+
+function Show-Console {
+    try {
+        $h = [Tk.Win]::GetConsoleWindow()
+        if ($h -ne [IntPtr]::Zero) { [Tk.Win]::ShowWindow($h, 9) | Out-Null }   # 9 = SW_RESTORE
+    } catch { }
+}
+
 function Fail($msg) {
+    Show-Console
     Write-Host ''
     Write-Host 'START FAILED:' -ForegroundColor Red
     Write-Host $msg -ForegroundColor Yellow
@@ -72,15 +94,28 @@ Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
     }
 
 # Run the app; keep the console open if it fails.
+# Start-Process -NoNewWindow is used to get a process object: we need to tell
+# "it started" from "it died instantly" -- minimize the console in the first case,
+# leave the traceback on screen in the second.
 $env:PYTHONIOENCODING = 'utf-8'
-$code = 0
+# -ArgumentList joins the array into one string, so paths with spaces need quotes
+# (e.g. project under "D:\My Projects\..." would otherwise split into two args).
+$argList = @($pyArgs | ForEach-Object { if ("$_" -match '\s') { '"' + $_ + '"' } else { "$_" } })
+$proc = $null
 try {
-    & $python @pyArgs
-    $code = $LASTEXITCODE
+    $proc = Start-Process -FilePath $python -ArgumentList $argList -PassThru -NoNewWindow
 } catch {
     Fail $_.Exception.Message
 }
 
-if ($code -ne 0) {
-    Fail "app.py exited with code $code"
+Start-Sleep -Milliseconds 2500
+if ($proc.HasExited) {
+    Fail "app.py exited immediately with code $($proc.ExitCode)"
+}
+
+Hide-Console
+$proc.WaitForExit()
+
+if ($proc.ExitCode -ne 0) {
+    Fail "app.py exited with code $($proc.ExitCode)"
 }

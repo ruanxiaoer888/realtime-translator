@@ -36,13 +36,21 @@ def transparent_bit(hwnd) -> bool:
 
 
 def main():
+    import shutil
+
     import app as A
     import markets
     import translate_core
 
-    # 干净起步
+    # 干净起步，但**先备份用户的设置**：本脚本会用测试值覆盖并保存 settings.json
+    # （第 2b 步把市场设成"墨西哥"再 on_close()），跑完必须还原 ——
+    # 否则跑一次自检，用户的真实配置就被测试值顶掉了。真实踩到过：
+    # 用户做的是巴西，settings.json 里却是"墨西哥"，就是这儿写进去的。
     sf = A.SETTINGS_FILE
-    if os.path.exists(sf):
+    backup = sf + ".verify-backup"
+    had_settings = os.path.exists(sf)
+    if had_settings:
+        shutil.copy2(sf, backup)
         os.remove(sf)
 
     print("=" * 78)
@@ -69,6 +77,40 @@ def main():
         check("置顶开关仍正常", a.overlay.attributes("-topmost") in (0, False))
         a.var_top.set(True)
         a.apply_top()
+
+        # 位置微调：鼠标穿透开着时悬浮窗收不到鼠标事件、拖不动，
+        # 所以主窗口这套按钮是唯一能挪它的途径，必须真的能挪。
+        a.overlay.deiconify()
+        a.overlay_pos = (200, 300)
+        a.overlay.geometry(f"{A.OVERLAY_W}x{A.OVERLAY_H}+200+300")
+        a.root.update()
+
+        a.nudge_overlay(-24, 0)
+        a.root.update()
+        check("◀ 让悬浮窗左移 24px",
+              (a.overlay.winfo_x(), a.overlay.winfo_y()) == (176, 300),
+              f"({a.overlay.winfo_x()}, {a.overlay.winfo_y()})")
+
+        a.nudge_overlay(0, 24)
+        a.root.update()
+        check("▼ 让悬浮窗下移 24px",
+              (a.overlay.winfo_x(), a.overlay.winfo_y()) == (176, 324),
+              f"({a.overlay.winfo_x()}, {a.overlay.winfo_y()})")
+
+        a.center_overlay()
+        a.root.update()
+        want_x = (a.root.winfo_screenwidth() - A.OVERLAY_W) // 2
+        check("居中把悬浮窗放到屏幕水平中间",
+              abs(a.overlay.winfo_x() - want_x) <= 2,
+              f"x={a.overlay.winfo_x()} 期望≈{want_x}")
+
+        check("位置标签跟着更新", "," in a.lbl_overlay_pos.cget("text"),
+              a.lbl_overlay_pos.cget("text"))
+
+        # 位置微调那一行不能撑出主窗口（撑出去控件会被裁掉，用户根本看不到）
+        need = a.lbl_overlay_pos.master.winfo_reqwidth()
+        check("位置微调行没超出窗口宽度", need <= 860, f"需要 {need}px / 窗口 880px")
+
         a.root.destroy()
 
     a.root.after(700, step1)
@@ -117,6 +159,7 @@ def main():
         out["墨西哥方向"] = b.lbl_reply_dir.cget("text")
         check("切市场后方向标签跟随", "西班牙语" in out["墨西哥方向"], out["墨西哥方向"])
         # 穿透设置被持久化
+        b.overlay_pos = (321, 432)
         b.var_clickthrough.set(True)
         b.on_close()
 
@@ -131,18 +174,33 @@ def main():
     saved = json.load(open(sf, encoding="utf-8"))
     check("settings.json 记下了穿透开关", saved.get("clickthrough") is True, str(saved.get("clickthrough")))
     check("settings.json 记下了市场", saved.get("market") == "墨西哥", str(saved.get("market")))
+    check("settings.json 记下了悬浮窗位置",
+          (saved.get("overlay_x"), saved.get("overlay_y")) == (321, 432),
+          f"{saved.get('overlay_x')}, {saved.get('overlay_y')}")
     c = A.App()
     r2 = {}
 
     def step4():
         r2["穿透"] = c.var_clickthrough.get()
         r2["市场"] = c.var_market.get()
+        r2["悬浮窗位置"] = (c.overlay.winfo_x(), c.overlay.winfo_y())
         c.root.destroy()
 
     c.root.after(700, step4)
     c.root.mainloop()
     check("重启后恢复穿透开关", r2["穿透"] is True, str(r2["穿透"]))
     check("重启后恢复市场", r2["市场"] == "墨西哥", str(r2["市场"]))
+    check("重启后悬浮窗回到原位置", r2["悬浮窗位置"] == (321, 432), str(r2["悬浮窗位置"]))
+
+    # 还原用户原来的 settings.json（跑自检不该动用户的配置）
+    try:
+        if had_settings and os.path.exists(backup):
+            shutil.copy2(backup, sf)
+            os.remove(backup)
+        elif os.path.exists(sf):
+            os.remove(sf)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [WARN] 还原 settings.json 失败：{e}")
 
     print()
     print("=" * 78)

@@ -116,6 +116,30 @@ def main():
     check("全部 .py 可编译", r.returncode == 0, f"{len(scripts)} 个文件" +
           ("" if r.returncode == 0 else "  " + r.stderr[:200]))
 
+    # 9) .ps1 必须是纯 ASCII —— 这不是洁癖，是硬约束。
+    #    start.ps1 的头部注释早就写了原因，但依然被踩过：Windows PowerShell 5.1
+    #    按系统 ANSI(GBK) 读 UTF-8 无 BOM 的 .ps1，中文注释的多字节序列会把后面的
+    #    换行符当成双字节字符的一部分吃掉 -> 行被合并 -> 整个脚本解析失败
+    #    （表现为双击 .bat 直接闪退，或 here-string 被吞掉一大段）。
+    ps1 = [f for f in sorted(os.listdir(ROOT)) if f.lower().endswith(".ps1")]
+    dirty = []
+    for f in ps1:
+        with open(os.path.join(ROOT, f), "rb") as fh:
+            if any(b > 127 for b in fh.read()):
+                dirty.append(f)
+    check(".ps1 均为纯 ASCII（PS 5.1 只认 ANSI）", not dirty,
+          f"{len(ps1)} 个文件" + ("  含非 ASCII: " + ", ".join(dirty) if dirty else ""))
+
+    # 10) 同样地，.bat 也只能是 ASCII（cmd 按系统 ANSI 读）
+    bats = [f for f in sorted(os.listdir(ROOT)) if f.lower().endswith(".bat")]
+    bat_dirty = []
+    for f in bats:
+        with open(os.path.join(ROOT, f), "rb") as fh:
+            if any(b > 127 for b in fh.read()):
+                bat_dirty.append(f)
+    check(".bat 均为纯 ASCII", not bat_dirty,
+          f"{len(bats)} 个文件" + ("  含非 ASCII: " + ", ".join(bat_dirty) if bat_dirty else ""))
+
     print("=" * 78)
     print(f"结果: 通过 {len(PASS)} 项, 失败 {len(FAIL)} 项")
     for f in FAIL:
