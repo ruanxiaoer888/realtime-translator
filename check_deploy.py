@@ -177,4 +177,12 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _code = main()
+    # 绕开解释器关停阶段的原生析构：实测本脚本在打印完结论后、Python 关停时
+    # 会触发 Windows 访问冲突（0xC0000005，堆栈里没有 Python 帧）——是某个原生库
+    # 的析构顺序问题，跟检查结果无关（10 项此时已全部跑完并打印）。
+    # 先 flush 再 os._exit，免得用户在「全部就绪」后面看到一个崩溃弹窗。
+    # 主程序 app.py 不受影响：它在 root.destroy() 之前就 save_settings()/close_cache() 了。
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_code)
