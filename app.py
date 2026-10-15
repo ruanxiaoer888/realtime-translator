@@ -62,7 +62,7 @@ ENGINE_MODES = {
 SETTINGS_FILE = os.path.join(ROOT, "settings.json")
 SETTINGS_KEYS = ("market", "category", "target", "model", "engine",
                  "interval", "font", "topmost", "clickthrough", "region",
-                 "chunk", "pause", "ocr", "overlay_x", "overlay_y")
+                 "chunk", "pause", "ocr", "overlay_x", "overlay_y", "topmost_main")
 
 # 悬浮窗默认尺寸与落点（右下角上方，避开常见直播画面）
 OVERLAY_W, OVERLAY_H = 760, 150
@@ -166,6 +166,7 @@ class App:
         import translate_core
         translate_core.set_engine(ENGINE_MODES.get(self.var_engine.get(), "api"))
         self.apply_market()
+        self.apply_top()                     # 让保存的置顶设置真正生效（以前漏了这一步）
         if self.var_clickthrough.get():      # 上次开着穿透，启动时恢复
             self.root.after(600, self.apply_clickthrough)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -203,6 +204,8 @@ class App:
                 self.var_font.set(max(10, min(60, int(s["font"]))))
             if isinstance(s.get("topmost"), bool):
                 self.var_top.set(s["topmost"])
+            if isinstance(s.get("topmost_main"), bool):
+                self.var_top_main.set(s["topmost_main"])
             if isinstance(s.get("clickthrough"), bool):
                 self.var_clickthrough.set(s["clickthrough"])
             ox, oy = s.get("overlay_x"), s.get("overlay_y")
@@ -235,6 +238,7 @@ class App:
             "ocr": self.var_ocr.get(),
             "font": int(self.var_font.get()),
             "topmost": bool(self.var_top.get()),
+            "topmost_main": bool(self.var_top_main.get()),
             "clickthrough": bool(self.var_clickthrough.get()),
             "region": list(self.region) if self.region else None,
         }
@@ -452,6 +456,10 @@ class App:
         ttk.Spinbox(opt, from_=10, to=60, width=5, textvariable=self.var_font).pack(side="left", padx=(4, 14))
         self.var_top = tk.BooleanVar(value=True)
         ttk.Checkbutton(opt, text="悬浮窗置顶", variable=self.var_top, command=self.apply_top).pack(side="left", padx=(0, 10))
+        # 主窗口置顶是**独立**开关。原来一个勾同时管两个窗口，但标签只写「悬浮窗置顶」，
+        # 用户勾/取消时主窗口跟着变，根本看不出是哪个生效了。
+        # 默认关：直播时主窗口常年压在最上层很挡事，需要时能 Alt+Tab / 点任务栏叫回来。
+        self.var_top_main = tk.BooleanVar(value=False)
         self.var_clickthrough = tk.BooleanVar(value=False)
         ttk.Checkbutton(opt, text="鼠标穿透", variable=self.var_clickthrough,
                         command=self.apply_clickthrough).pack(side="left", padx=(0, 14))
@@ -469,9 +477,11 @@ class App:
                        command=lambda a=dx, b=dy: self.nudge_overlay(a, b)
                        ).pack(side="left", padx=1)
         ttk.Button(pos, text="居中", command=self.center_overlay).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(pos, text="主窗口置顶", variable=self.var_top_main,
+                        command=self.apply_top).pack(side="left", padx=(10, 0))
         self.lbl_overlay_pos = ttk.Label(pos, text="", foreground="#8f93a8")
         self.lbl_overlay_pos.pack(side="left", padx=10)
-        ttk.Label(pos, text="（鼠标穿透开着也能用这里挪；位置会记住）",
+        ttk.Label(pos, text="（穿透开着也能挪；位置会记住）",
                   foreground="#6f7385").pack(side="left")
 
         self.lbl_src_hdr = ttk.Label(f1, text="识别的原文", style="Header.TLabel")
@@ -575,7 +585,7 @@ class App:
         # ---- 悬浮窗 ----
         self.overlay = tk.Toplevel(self.root)
         self.overlay.overrideredirect(True)
-        self.overlay.attributes("-topmost", True)
+        self.overlay.attributes("-topmost", bool(self.var_top.get()))
         self.overlay.attributes("-alpha", 0.93)
         self.overlay.configure(bg="#0d0d12")
         wrap = tk.Frame(self.overlay, bg="#0d0d12", highlightbackground="#00d1ff", highlightthickness=1)
@@ -651,8 +661,15 @@ class App:
         self.overlay.withdraw()
 
     def apply_top(self):
+        """按两个独立开关分别设置置顶：悬浮窗 / 主窗口。
+
+        真实踩到的 bug：原来一个开关同时设这两个窗口，而且 show_overlay() 里
+        把悬浮窗的置顶**硬编码成 True** —— 于是取消勾选后只要一按「开始」，
+        悬浮窗又被强制置顶，"勾了没反应"。而且 apply_top() 启动时从没被调用过，
+        保存的置顶设置重启后也不生效。
+        """
         self.overlay.attributes("-topmost", bool(self.var_top.get()))
-        self.root.attributes("-topmost", bool(self.var_top.get()))
+        self.root.attributes("-topmost", bool(self.var_top_main.get()))
 
     def _overlay_hwnds(self) -> list[int]:
         """悬浮窗可能的窗口句柄（Tk 顶层窗口在某些情况下要取父窗口）。"""
@@ -711,7 +728,9 @@ class App:
 
     def show_overlay(self):
         self.overlay.deiconify()
-        self.overlay.attributes("-topmost", True)
+        # 必须尊重「悬浮窗置顶」勾选 —— 这里以前硬编码 True，
+        # 导致取消勾选后一按「开始」又被强制置顶（用户报的"勾了没反应"）。
+        self.overlay.attributes("-topmost", bool(self.var_top.get()))
         self._refresh_overlay_pos()
 
     # ---------------- 实时屏幕翻译 ----------------

@@ -71,12 +71,35 @@ def main():
         a.apply_clickthrough()
         result["off"] = any(transparent_bit(h) for h in hwnds)
         check("关闭后样式位被清掉", not result["off"], a.lbl_live.cget("text")[:30])
-        # 置顶仍然可用
+        # 置顶：两个独立开关，而且 show_overlay() 不能把它硬编码回 True。
+        # 真实踩到的 bug：show_overlay() 里写死 -topmost True，
+        # 于是取消勾选后一按「开始」悬浮窗又被强制置顶 —— 用户报的"勾了没反应"。
         a.var_top.set(False)
         a.apply_top()
-        check("置顶开关仍正常", a.overlay.attributes("-topmost") in (0, False))
+        check("取消「悬浮窗置顶」后确实不置顶",
+              not bool(a.overlay.attributes("-topmost")),
+              str(a.overlay.attributes("-topmost")))
+        a.show_overlay()
+        a.root.update()
+        check("show_overlay() 尊重取消勾选（曾硬编码 True）",
+              not bool(a.overlay.attributes("-topmost")),
+              str(a.overlay.attributes("-topmost")))
         a.var_top.set(True)
         a.apply_top()
+        check("重新勾选后恢复置顶",
+              bool(a.overlay.attributes("-topmost")),
+              str(a.overlay.attributes("-topmost")))
+
+        # 主窗口置顶必须是独立开关，不能被「悬浮窗置顶」连坐
+        a.var_top_main.set(True)
+        a.apply_top()
+        check("「主窗口置顶」可独立开启",
+              bool(a.root.attributes("-topmost")), str(a.root.attributes("-topmost")))
+        a.var_top_main.set(False)
+        a.apply_top()
+        check("「主窗口置顶」可独立关闭（悬浮窗仍置顶）",
+              not bool(a.root.attributes("-topmost")) and bool(a.overlay.attributes("-topmost")),
+              f"root={a.root.attributes('-topmost')} overlay={a.overlay.attributes('-topmost')}")
 
         # 位置微调：鼠标穿透开着时悬浮窗收不到鼠标事件、拖不动，
         # 所以主窗口这套按钮是唯一能挪它的途径，必须真的能挪。
@@ -184,6 +207,8 @@ def main():
         # 穿透设置被持久化
         b.overlay_pos = (321, 432)
         b.var_clickthrough.set(True)
+        b.var_top.set(False)          # 悬浮窗不置顶
+        b.var_top_main.set(True)      # 主窗口置顶
         b.on_close()
 
     b.root.after(700, step2)
@@ -200,6 +225,8 @@ def main():
     check("settings.json 记下了悬浮窗位置",
           (saved.get("overlay_x"), saved.get("overlay_y")) == (321, 432),
           f"{saved.get('overlay_x')}, {saved.get('overlay_y')}")
+    check("settings.json 记下了悬浮窗置顶", saved.get("topmost") is False, str(saved.get("topmost")))
+    check("settings.json 记下了主窗口置顶", saved.get("topmost_main") is True, str(saved.get("topmost_main")))
     c = A.App()
     r2 = {}
 
@@ -207,6 +234,10 @@ def main():
         r2["穿透"] = c.var_clickthrough.get()
         r2["市场"] = c.var_market.get()
         r2["悬浮窗位置"] = (c.overlay.winfo_x(), c.overlay.winfo_y())
+        r2["悬浮窗置顶"] = c.var_top.get()
+        r2["主窗口置顶"] = c.var_top_main.get()
+        r2["悬浮窗实际"] = bool(c.overlay.attributes("-topmost"))
+        r2["主窗口实际"] = bool(c.root.attributes("-topmost"))
         c.root.destroy()
 
     c.root.after(700, step4)
@@ -214,6 +245,11 @@ def main():
     check("重启后恢复穿透开关", r2["穿透"] is True, str(r2["穿透"]))
     check("重启后恢复市场", r2["市场"] == "墨西哥", str(r2["市场"]))
     check("重启后悬浮窗回到原位置", r2["悬浮窗位置"] == (321, 432), str(r2["悬浮窗位置"]))
+    check("重启后悬浮窗置顶设置恢复", r2["悬浮窗置顶"] is False, str(r2["悬浮窗置顶"]))
+    check("重启后主窗口置顶设置恢复", r2["主窗口置顶"] is True, str(r2["主窗口置顶"]))
+    check("重启后置顶真的作用到窗口上（启动时曾漏调 apply_top）",
+          r2["悬浮窗实际"] is False and r2["主窗口实际"] is True,
+          f"overlay={r2['悬浮窗实际']} root={r2['主窗口实际']}")
 
     # 还原用户原来的 settings.json（跑自检不该动用户的配置）
     try:
