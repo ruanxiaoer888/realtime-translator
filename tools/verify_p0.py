@@ -8,7 +8,7 @@
   D. NLLB 通道的同类保护
 
 运行（项目根目录）:
-    python tmp\\verify_p0.py
+    python tools\\verify_p0.py
 """
 from __future__ import annotations
 

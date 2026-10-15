@@ -3,7 +3,7 @@
 
 不修改任何既有文件；只在本脚本内 monkeypatch 运行时对象（check 6），跑完立即还原。
 运行方式（工作目录 = 项目根）：
-    python tmp\\audit_translate.py
+    python tools\\audit_translate.py
 """
 from __future__ import annotations
 

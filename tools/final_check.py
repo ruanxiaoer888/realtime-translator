@@ -4,7 +4,7 @@
 覆盖：依赖自包含 / OCR 真实识别 / 语音识别真实推理 / 术语修正 / 画面变化 /
       翻译通道熔断 / 界面构建 / 各脚本可编译
 
-运行（项目根目录）: python tmp\\final_check.py
+运行（项目根目录）: python tools\\final_check.py
 """
 from __future__ import annotations
 
@@ -107,9 +107,9 @@ def main():
     a2.root.destroy()
     check("界面构建 + 标题跟随市场", "西班牙语" in hdr, f"{title} / {hdr}")
 
-    # 8) 所有发布用的脚本能编译
+    # 8) 所有发布用的脚本能编译（根目录 + tools/）
     scripts = [f for f in sorted(os.listdir(ROOT)) if f.endswith(".py")]
-    scripts += [os.path.join("tmp", f) for f in sorted(os.listdir(os.path.join(ROOT, "tmp")))
+    scripts += [os.path.join("tools", f) for f in sorted(os.listdir(os.path.join(ROOT, "tools")))
                 if f.endswith(".py")]
     r = subprocess.run([sys.executable, "-m", "py_compile"] + scripts,
                        cwd=ROOT, capture_output=True, text=True)

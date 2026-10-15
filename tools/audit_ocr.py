@@ -2,7 +2,7 @@
 """OCR 精度审计：合成葡语/西语直播评论文本图，测真实 OCR 的字错率 (CER)。
 
 只读审计脚本，不修改项目任何文件。
-运行:  python tmp\\audit_ocr.py
+运行:  python tools\\audit_ocr.py
 （在项目根目录下运行）
 """
 from __future__ import annotations

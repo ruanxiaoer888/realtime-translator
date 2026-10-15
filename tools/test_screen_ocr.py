@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """端到端验证：在屏幕上显示一张葡语图 -> 用真实抓屏管线 OCR -> 翻译。
 
-用法: python tmp/test_screen_ocr.py
+用法: python tools/test_screen_ocr.py
 """
 import os
 import sys

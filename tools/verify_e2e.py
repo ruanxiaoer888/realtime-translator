@@ -3,7 +3,7 @@
 确认修好之后不会再出现"电动一字螺丝刀""电动电动螺丝刀"这类污染。
 
 运行（项目根目录）:
-    python tmp\\verify_e2e.py
+    python tools\\verify_e2e.py
 """
 from __future__ import annotations
 

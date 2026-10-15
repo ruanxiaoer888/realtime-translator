@@ -67,7 +67,7 @@ def main():
     total = sum(os.path.getsize(os.path.join(DEST, x)) for x in files)
     print(f"\n结果: {len(files)} 个文件, 共 {total/1048576:.1f} MB, "
           f"{'全部成功' if ok else '有文件缺失（缺 rec.onnx 或 dict.txt 时会自动退回中文模型，功能不受影响）'}")
-    print("自检: python tmp\\audit_ocr_latin.py   （会重测重音与字错率）")
+    print("自检: python tools\\audit_ocr_latin.py   （会重测重音与字错率）")
 
 
 if __name__ == "__main__":

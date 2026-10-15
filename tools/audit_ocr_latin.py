@@ -3,9 +3,9 @@
 
 只读实验脚本，不改动项目任何文件；只往 tmp/models/ocr-latin/ 下载模型。
 运行（项目根目录）:
-    python tmp\\audit_ocr_latin.py
+    python tools\\audit_ocr_latin.py
 
-基线（中文模型）由 tmp/audit_ocr.py 测出，本脚本用同一套渲染/指标再测一遍拉丁模型，
+基线（中文模型）由 tools/audit_ocr.py 测出，本脚本用同一套渲染/指标再测一遍拉丁模型，
 两边数字可直接对比。
 """
 from __future__ import annotations
@@ -109,7 +109,7 @@ def main():
 
     st._ocr_engine = engine          # 让 screen_translate.recognize 用这个引擎
     print("\n" + "#" * 78)
-    print("用 tmp/audit_ocr.py 的同一套图与指标重测")
+    print("用 tools/audit_ocr.py 的同一套图与指标重测")
     print("#" * 78 + "\n")
 
     base.run_case("PT size=18 [LATIN]", base.PT_LINES, 18)

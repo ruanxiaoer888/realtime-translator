@@ -2,7 +2,7 @@
 """CPU 与 GPU 识别速度对比：决定公司电脑（GTX 1650）要不要折腾 CUDA 环境。
 
 用真实语音文件测，输出 RTF（实时率）和一句（3 秒音频）的等效耗时。
-运行: python tmp\bench_cpu_gpu.py
+运行: python tools\bench_cpu_gpu.py
 """
 from __future__ import annotations
 

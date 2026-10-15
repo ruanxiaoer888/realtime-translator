@@ -12,12 +12,12 @@ r"""M2M-100 418M (CTranslate2, MIT) 离线翻译可行性探针。
 避免碰到已有的 tmp\translate_cache.json。
 
 运行：
-    python tmp\m2m_probe.py --steps 1
-    python tmp\m2m_probe.py --steps 2,3
-    python tmp\m2m_probe.py                 # 全部
+    python tools\m2m_probe.py --steps 1
+    python tools\m2m_probe.py --steps 2,3
+    python tools\m2m_probe.py                 # 全部
 
 额外诊断（beam 消融，结论不受影响）：
-    python tmp\m2m_probe.py --steps 2,3 --beam 5
+    python tools\m2m_probe.py --steps 2,3 --beam 5
 """
 from __future__ import annotations
 

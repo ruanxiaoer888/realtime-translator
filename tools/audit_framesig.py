@@ -7,7 +7,7 @@
 现在它是对修好之后的实现的回归测试，直接读屏幕翻译模块里的实际参数。
 
 只读脚本，不修改项目任何文件。
-运行:  python tmp\\audit_framesig.py
+运行:  python tools\\audit_framesig.py
 （在项目根目录下运行）
 """
 from __future__ import annotations

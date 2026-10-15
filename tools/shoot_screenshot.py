@@ -2,7 +2,7 @@
 """抓一张真实界面截图给 README 用。
 
 启动 app.py -> 用 Win32 API 精确取到窗口矩形 -> 截图 -> 关闭程序。
-运行（项目根目录）: python tmp\\shoot_screenshot.py
+运行（项目根目录）: python tools\\shoot_screenshot.py
 """
 from __future__ import annotations
 

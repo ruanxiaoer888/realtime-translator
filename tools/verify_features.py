@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """两个新功能的验收：悬浮窗鼠标穿透 + 回复助手（中文→市场语言）。
 
-运行（项目根目录）: python tmp\\verify_features.py
+运行（项目根目录）: python tools\\verify_features.py
 """
 from __future__ import annotations
 

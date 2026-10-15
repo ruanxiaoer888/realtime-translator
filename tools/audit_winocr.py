@@ -7,7 +7,7 @@
   3. 如果 pt-BR 已就绪：拿同一批合成评论图，对比两个引擎的**字错率**和**单帧耗时**
 
 运行（项目根目录）:
-    python tmp\\audit_winocr.py
+    python tools\\audit_winocr.py
 """
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ def status_only():
     print(f"葡语语音引擎  : {'已就绪 ' + str(pt_sr) if pt_sr else '还没装上'}")
 
     if pt:
-        print("\n葡语 OCR 已可用 -> 跑完整对比: python tmp\\audit_winocr.py")
+        print("\n葡语 OCR 已可用 -> 跑完整对比: python tools\\audit_winocr.py")
     else:
         print("\n还在下载。装完这两项再继续：")
         print("   · 光学字符识别（'所需的语言功能'里自动带的，对应上面的葡语 OCR）")

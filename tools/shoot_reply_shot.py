@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """给「回复助手」页签抓一张真实截图（含真实翻译结果，不是假数据）。
 
-运行（项目根目录）: python tmp\\shoot_reply_shot.py
+运行（项目根目录）: python tools\\shoot_reply_shot.py
 """
 from __future__ import annotations
 
