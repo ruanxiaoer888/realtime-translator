@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """翻译核心：葡萄牙语 -> 中文。
 
-多通道自动降级，不依赖任何 API Key：
-  1. Google 网页翻译接口（clients5，dict-chrome-ex）
-  2. MyMemory（备用，单次 500 字符以内）
-  3. 有道公开演示接口（备用）
+多通道自动降级，不依赖任何 API Key（顺序按实测**质量**排，理由见 _CHANNELS）：
+  1. 有道公开演示接口        术语命中 81%，0.09 s/句，会突发限流
+  2. MyMemory               术语命中 62%，0.95 s/句，有每日配额
+  3. 腾讯交互翻译 transmart   术语命中 53%，0.28 s/句，但**不限流**（可靠性底线）
+  4. Google clients5        国内直连不可达（实测整 6 秒超时），需代理，仅作末位兜底
 带本地缓存与失败重试，翻译不到时返回 None，不影响主流程。
 """
 from __future__ import annotations
@@ -16,6 +17,7 @@ import re
 import ssl
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -28,6 +30,10 @@ _CTX = ssl.create_default_context()
 _CTX.check_hostname = False
 _CTX.verify_mode = ssl.CERT_NONE
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+
+# 腾讯交互翻译：client_key 只是标识调用方，非密钥。
+_TENCENT_URL = "https://transmart.qq.com/api/imt"
+_TENCENT_CLIENT_KEY = "browser-chrome-124.0.0.0-abcdefgh"
 
 _cache: dict[str, str] = {}
 _lock = threading.Lock()
@@ -63,6 +69,45 @@ def _get(url: str, timeout: float = 6.0) -> bytes:
         return r.read()
 
 
+def _post_json(url: str, payload: dict, timeout: float = 6.0) -> bytes:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "User-Agent": _UA,
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+        },
+    )
+    with urllib.request.urlopen(req, context=_CTX, timeout=timeout) as r:
+        return r.read()
+
+
+class _Throttled(Exception):
+    """通道被服务端限流。seconds = 服务端建议的冷却时长。
+
+    踩坑记录：免费接口的限流分两种，必须区别对待 ——
+      · 有道 demo：突发限流，回 {"errorCode":411}，几十秒后自己恢复
+      · MyMemory：**每日**配额，HTTP 429 + Retry-After（实测 17917 秒 ≈ 5 小时）
+    统一按 120 秒冷却的话，MyMemory 每天会被白白重试几百次。
+    """
+
+    def __init__(self, seconds: float):
+        super().__init__(f"throttled {seconds:.0f}s")
+        self.seconds = seconds
+
+
+def _retry_after(err, fallback: float = 600.0) -> float:
+    """从 HTTPError 的 Retry-After 头取冷却秒数，夹在 30 秒 ~ 8 小时之间。"""
+    try:
+        v = err.headers.get("Retry-After")
+        if v:
+            return max(30.0, min(float(v), 8 * 3600.0))
+    except Exception:
+        pass
+    return fallback
+
+
 def _google(text: str, src: str, dst: str) -> str | None:
     q = urllib.parse.quote(text)
     sl = _norm_lang(src, "google")
@@ -93,10 +138,20 @@ def _mymemory(text: str, src: str, dst: str) -> str | None:
         + urllib.parse.quote(text)
         + f"&langpair={sl}|{_norm_lang(dst, 'basic')}"
     )
-    data = json.loads(_get(url).decode("utf-8"))
+    try:
+        raw = _get(url)
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            # 每日免费额度用尽：Retry-After 实测 17917 秒
+            raise _Throttled(_retry_after(e)) from None
+        raise
+    data = json.loads(raw.decode("utf-8"))
     out = (data.get("responseData") or {}).get("translatedText")
     if out and "MYMEMORY WARNING" not in out.upper():
         return out
+    if out and "MYMEMORY WARNING" in out.upper():
+        # 每日配额用尽时也可能以 200 返回这段警告，而不是 429
+        raise _Throttled(1800.0)
     return None
 
 
@@ -107,13 +162,50 @@ def _youdao(text: str, src: str, dst: str) -> str | None:
         + f"&from={_norm_lang(src, 'youdao')}&to={_norm_lang(dst, 'youdao')}"
     )
     data = json.loads(_get(url).decode("utf-8"))
+    code = data.get("errorCode")
+    if code not in (None, "0", 0):
+        if str(code) == "411":
+            # 请求频率过快：实测放行约 6 次后开始拒绝，几十秒后自己恢复
+            raise _Throttled(90.0)
+        return None
     tr = data.get("translation")
     if isinstance(tr, list) and tr:
         return tr[0]
     return None
 
 
-_CHANNELS = (_google, _mymemory, _youdao)
+def _tencent(text: str, src: str, dst: str) -> str | None:
+    """腾讯交互翻译 transmart（免 Key，国内直连，实测 0.37 s/句）。"""
+    payload = {
+        "header": {"fn": "auto_translation", "client_key": _TENCENT_CLIENT_KEY},
+        "type": "plain",
+        "model_category": "normal",
+        "source": {"lang": _norm_lang(src, "tencent"), "text_list": [text]},
+        "target": {"lang": _norm_lang(dst, "tencent")},
+    }
+    data = json.loads(_post_json(_TENCENT_URL, payload).decode("utf-8"))
+    if (data.get("header") or {}).get("ret_code") not in (None, "succ"):
+        return None
+    arr = data.get("auto_translation")
+    if isinstance(arr, list) and arr and isinstance(arr[0], str):
+        return arr[0] or None
+    return None
+
+
+# 顺序 = 实测**质量**由高到低，不是延迟由快到慢。这个排序是被压测推翻后改的：
+#
+#   通道      术语命中率   中位延迟   持续调用可靠性
+#   有道       81%        0.09 s    突发限流（411），约放行 6 次后拒绝，几十秒恢复
+#   MyMemory   62%*       0.95 s    每日配额（429，Retry-After 实测 17917 秒），用完当天不可用
+#   腾讯       53%        0.28 s    65 次连续调用零失败
+#   Google     —          6 s 超时   国内直连不可达，需代理
+#
+#   * MyMemory 这一列是补术语修正**之前**测的（18/29）。补完之后它每日配额已被测试打光，
+#     无法复测，所以 62% 是它的下界。
+# 把 有道/MyMemory 放前面：它们质量最好，熔断后跳过几乎不花时间（失败只要 0.1~0.7 秒）。
+# 腾讯放第三：质量最差，但它是唯一**不限流**的通道，是长直播的可靠性底线。
+# Google 放最后：只有前面三个全挂时才会轮到它，正常流程永远不白等那 6 秒。
+_CHANNELS = (_youdao, _mymemory, _tencent, _google)
 
 # 通道熔断：某个通道失败后在冷却期内直接跳过，不再白等它的超时。
 # 实测教训：Google 那条接口在国内时通时不通，一次超时要等 6~8 秒；
@@ -133,11 +225,11 @@ def _channel_ok(name: str) -> bool:
     return False
 
 
-def _mark_channel(name: str, ok: bool):
+def _mark_channel(name: str, ok: bool, cooldown: float | None = None):
     if ok:
         _channel_down.pop(name, None)
     else:
-        _channel_down[name] = time.time() + _CHANNEL_COOLDOWN
+        _channel_down[name] = time.time() + (cooldown or _CHANNEL_COOLDOWN)
 
 
 def channel_status() -> dict:
@@ -204,11 +296,12 @@ def _try_nllb(text: str, src: str, dst: str):
 # 术语修正规则：左边是"常见错译"，右边是标准说法。
 # 触发条件：当前术语表里有这个原文词。模型/接口把哪个词译错就改哪个，语言无关。
 TERM_FIXES = {
-    "parafusadeira": [("螺旋", "螺栓"), ("螺丝刀", "起子")],
+    "parafusadeira": [("螺旋", "螺栓"), ("螺丝刀", "起子"), ("保险丝", "螺丝钉")],
     "chave de fenda": [("裂钥匙", "螺丝刀")],
-    "furadeira": [("钻机", "钻孔机", "演习")],
+    "furadeira": [("钻机", "钻孔机", "演习", "保险丝")],
     "jogo de chaves": [("钥匙",)],
-    "jogo de soquetes": [("插座",)],
+    "jogo de soquetes": [("插座", "游戏")],
+    "soquete": [("插座", "socket")],
     "maleta": [("手提箱", "行李箱", "手提包", "公文包", "工具包", "盒子", "外壳")],
     "bateria": [("鼓", "乐团")],
     "carregador": [("装载机",)],
@@ -219,16 +312,20 @@ TERM_FIXES = {
     "material": [("这种材",)],
     # 五金工具（葡语）—— 拿真实直播录音补的：
     #   philips e fenda 被译成"飞利浦和插槽"、bivolt 直接没翻
-    "sextavado": [("十六进制", "六角形")],
+    "sextavado": [("十六进制", "六角形", "六角键")],
     "chave philips": [("十字螺丝刀",)],
-    "philips": [("飞利浦",)],
-    "fenda": [("插槽", "槽")],
+    "philips": [("飞利浦", "philips")],
+    "fenda": [("插槽", "槽", "裂缝", "Crut")],
     "bivolt": [("bivolt", "双伏特")],
     "martelete": [("锤子", "大锤")],
     "ponteira": [("尖端", "提示")],
     "porca": [("猪",)],
     "arruela": [("洗衣机",)],
-    "nível": [("等级", "级别")],
+    "nível": [("等级", "级别", "水平仪")],
+    "estilete": [("触控笔", "刻度", "雕刻刀")],
+    "esmerilhadeira": [("磨床", "打磨机", "研磨机", "磨光机")],
+    "chave inglesa": [("钥匙英文", "英文钥匙", "钥匙")],
+    "serra tico-tico": [("锯木机",)],
     "lixadeira": [("砂纸机",)],
     "voltagem": [("电压",)],
     "montar": [("登上", "设置")],
@@ -392,8 +489,9 @@ def _norm_lang(code: str, style: str) -> str:
         if low.startswith("zh"):
             return "zh-CHS"
         return low.split("-")[0]
-    if style == "basic":
-        # MyMemory：只要两字母
+    if style in ("basic", "tencent"):
+        # MyMemory / 腾讯 transmart：只要两字母（zh-CN -> zh、pt-BR -> pt）
+        # 注意 src 为 'auto' 时上面已 return 'auto'，腾讯该接口接受 auto。
         return low.split("-")[0]
     # Google / NLLB：接受 pt-BR、zh-CN 这种完整写法
     return c
@@ -431,6 +529,10 @@ def translate(text: str, src: str = "auto", dst: str = "zh-CN", retries: int = 2
                                 _dirty = True
                             return out
                     _mark_channel(name, False)      # 有响应但没结果/没真译，同样算这个通道不行
+                except _Throttled as e:
+                    # 被限流：按服务端建议的时长冷却，不要每 120 秒白试一次
+                    _mark_channel(name, False, cooldown=e.seconds)
+                    continue
                 except Exception:
                     _mark_channel(name, False)
                     continue
