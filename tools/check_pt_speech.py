@@ -204,6 +204,24 @@ def staged_components(lang: str = "pt-br") -> dict[str, bool]:
     return out
 
 
+def stuck_transaction() -> tuple[bool, float]:
+    """有没有卡住的部署事务（C:\\Windows\\WinSxS\\pending.xml）。
+
+    pending.xml 正常情况在重启时被处理掉并删除。如果它长时间存在，说明有部署事务
+    执行不完（本机实测：事务里的 OCR/Speech-pt-br-Deployment 操作都在，但 CBS 报
+    Error 800f0983 组件仓库错误，事务卡了 1 个多小时没动）——
+    这种情况下 Add-WindowsCapability / 重启都没用，要修组件仓库：
+        DISM /Online /Cleanup-Image /RestoreHealth
+    返回 (是否存在, 存在了多少小时)。
+    """
+    p = r"C:\Windows\WinSxS\pending.xml"
+    try:
+        age = (time.time() - os.path.getmtime(p)) / 3600.0
+        return True, age
+    except Exception:
+        return False, 0.0
+
+
 def main():
     print("=" * 66)
     print("系统语言组件检查（葡萄牙语 / 西班牙语）")
@@ -266,16 +284,31 @@ def main():
               f" > 开机 {time.strftime('%m-%d %H:%M', time.localtime(boot))}）。")
         print("  重启后再跑一次本脚本。")
     elif added and staged.get("OCR"):
-        print("\n  语言已添加、组件也已下载，**但重启过了仍然没生效** —— 不是重启的问题。")
-        print("  实测原因：Windows 把这些包当作「未安装的功能(FOD)」跳过了，")
-        print("  CBS 日志里是这一句：Skip FODs not currently installed: "
-              "Microsoft-Windows-LanguageFeatures-OCR-pt-br-Package")
-        print("  需要在**管理员 PowerShell** 里补装这两条命令：")
-        print("      Add-WindowsCapability -Online -Name 'Language.OCR~~~pt-BR~0.0.1.0'")
-        print("      Add-WindowsCapability -Online -Name 'Language.Speech~~~pt-BR~0.0.1.0'")
-        print("  跑完重启，再回来跑一次本脚本。")
-        print("  （先看状态：Get-WindowsCapability -Online | "
-              "Where-Object Name -like '*pt-BR*' | Select Name,State）")
+        stuck, age = stuck_transaction()
+        if stuck and age > 0.5:
+            print("\n  语言已添加、组件已下载、重启也试过了，但**仍然没生效**。")
+            print(f"  实测原因：有一个卡住的部署事务（pending.xml 已存在 {age:.1f} 小时没被处理），")
+            print("  CBS 日志里的错误是组件仓库故障：Error 800f0983 "
+                  "originated in ComponentStore::CRawStoreLayout。")
+            print("  这种状态下重启和 Add-WindowsCapability 都不会生效，要先修组件仓库。")
+            print("  在**管理员 PowerShell** 里跑（10~40 分钟，会走 Windows Update 取修复源）：")
+            print("      DISM /Online /Cleanup-Image /RestoreHealth")
+            print("  完成后再跑：")
+            print("      sfc /scannow")
+            print("      Add-WindowsCapability -Online -Name 'Language.OCR~~~pt-BR~0.0.1.0'")
+            print("      Add-WindowsCapability -Online -Name 'Language.Speech~~~pt-BR~0.0.1.0'")
+            print("  然后重启。若 RestoreHealth 报 0x800f0954/0x800f0906（连不上更新源），")
+            print("  需要挂一份同版本 ISO 当源：")
+            print("      DISM /Online /Cleanup-Image /RestoreHealth /Source:X:\\sources\\install.wim /LimitAccess")
+            print("  注意：**不要手工删 pending.xml**，那样可能弄坏服务栈。")
+        else:
+            print("\n  语言已添加、组件也已下载，但没生效 —— 需要补装成「已安装的功能」。")
+            print("  在**管理员 PowerShell** 里跑：")
+            print("      Add-WindowsCapability -Online -Name 'Language.OCR~~~pt-BR~0.0.1.0'")
+            print("      Add-WindowsCapability -Online -Name 'Language.Speech~~~pt-BR~0.0.1.0'")
+            print("  跑完重启，再回来跑一次本脚本。")
+            print("  （先看状态：Get-WindowsCapability -Online | "
+                  "Where-Object Name -like '*pt-BR*' | Select Name,State）")
     elif added:
         print("\n  语言已添加，但没有组件下载记录 —— OCR / 语音组件可能没勾选。")
         print("  设置 → 时间和语言 → 语言和区域 → 葡萄牙语(巴西) → ⋯ → 语言选项")
