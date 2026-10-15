@@ -111,6 +111,29 @@ def main():
         need = a.lbl_overlay_pos.master.winfo_reqwidth()
         check("位置微调行没超出窗口宽度", need <= 860, f"需要 {need}px / 窗口 880px")
 
+        # 直接鼠标拖动：必须**整棵控件树**都能拖。
+        # 真实踩过的坑：原来只绑了 header/lbl_overlay/wrap，而标题栏文字是 header
+        # 里的一个 Label 且铺满 header —— 抓标题栏拖动完全没反应（位移 0,0）。
+        for name, w, start in (("标题栏", a.lbl_overlay_hdr, (40, 8)),
+                               ("正文", a.lbl_overlay, (60, 30)),
+                               ("外框", a.lbl_overlay.master, (5, 5))):
+            a.overlay.geometry("+400+400")
+            a.root.update()
+            w.event_generate("<Button-1>", x=start[0], y=start[1])
+            w.event_generate("<B1-Motion>", x=start[0] + 30, y=start[1] + 25)
+            a.root.update()
+            got = (a.overlay.winfo_x() - 400, a.overlay.winfo_y() - 400)
+            check(f"鼠标拖动悬浮窗（{name}）位移精确", got == (30, 25), f"拖 (30,25) 得到 {got}")
+
+        # 拖不动的状态必须看得见，否则用户只会觉得"坏了"
+        a.var_clickthrough.set(True)
+        a.apply_clickthrough()
+        check("穿透开启时悬浮窗上有可见提示",
+              "穿透" in a.lbl_ct.cget("text"), a.lbl_ct.cget("text")[:36])
+        a.var_clickthrough.set(False)
+        a.apply_clickthrough()
+        check("关闭穿透后提示消失", a.lbl_ct.cget("text") == "", repr(a.lbl_ct.cget("text")))
+
         a.root.destroy()
 
     a.root.after(700, step1)

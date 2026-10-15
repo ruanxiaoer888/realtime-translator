@@ -580,23 +580,43 @@ class App:
         self.overlay.configure(bg="#0d0d12")
         wrap = tk.Frame(self.overlay, bg="#0d0d12", highlightbackground="#00d1ff", highlightthickness=1)
         wrap.pack(fill="both", expand=True)
+        self._overlay_wrap = wrap
         header = tk.Frame(wrap, bg="#0d0d12")
         header.pack(fill="x")
         self.lbl_overlay_hdr = tk.Label(header, text=" 中文翻译 ", bg="#0d0d12", fg="#00d1ff",
                                         font=("Microsoft YaHei UI", 9))
         self.lbl_overlay_hdr.pack(side="left")
+        # 穿透开着的时候悬浮窗自己收不到鼠标事件，用户会以为是"拖不动了"。
+        # 这里放一个显眼的标记，让"为什么拖不动"一眼可见。
+        self.lbl_ct = tk.Label(header, text="", bg="#0d0d12", fg="#ffd166",
+                               font=("Microsoft YaHei UI", 9))
+        self.lbl_ct.pack(side="left")
         tk.Button(header, text="✕", command=self.hide_overlay, bg="#0d0d12", fg="#ff6b6b",
                   relief="flat", bd=0, font=("Segoe UI", 9)).pack(side="right")
         self.lbl_overlay = tk.Label(wrap, text="等待识别…", bg="#0d0d12", fg="#00ff9d",
                                     font=("Microsoft YaHei UI", 22), wraplength=700,
                                     justify="left", anchor="w")
         self.lbl_overlay.pack(fill="both", expand=True, padx=10, pady=(2, 10))
-        for w in (header, self.lbl_overlay, wrap):
-            w.bind("<Button-1>", self._drag_start)
-            w.bind("<B1-Motion>", self._drag_move)
+        # 拖动绑定必须覆盖**整棵控件树**，不能只绑几个容器。
+        # 真实踩到的坑：原来只绑了 header / lbl_overlay / wrap 三个，
+        # 但标题栏文字是 header 里的一个 Label、且铺满 header —— 鼠标点上去
+        # 命中的是那个 Label，没绑就等于"抓标题栏拖不动"（实测位移 0,0）。
+        self._bind_drag_tree(wrap)
         x, y = self.overlay_pos or OVERLAY_FALLBACK
         self.overlay.geometry(f"{OVERLAY_W}x{OVERLAY_H}+{int(x)}+{int(y)}")
         self.overlay.withdraw()
+
+    def _bind_drag_tree(self, w):
+        """给悬浮窗里的每个控件绑上拖动，并设成"可移动"光标（按钮除外，✕ 要能点）。"""
+        if not isinstance(w, (tk.Button, ttk.Button)):
+            w.bind("<Button-1>", self._drag_start)
+            w.bind("<B1-Motion>", self._drag_move)
+            try:
+                w.configure(cursor="fleur")
+            except Exception:
+                pass
+        for child in w.winfo_children():
+            self._bind_drag_tree(child)
 
     # ---------------- 悬浮窗拖动 ----------------
     def _drag_start(self, e):
@@ -671,12 +691,23 @@ class App:
             self.lbl_live.config(text="鼠标穿透设置失败（未能作用到悬浮窗）", foreground="#ff6b6b")
             return
         if on:
+            self.lbl_ct.config(text="  · 穿透中，拖不动（用主窗口 ◀▲▼▶ 挪）")
+            try:
+                self._overlay_wrap.config(highlightbackground="#ffd166")
+            except Exception:
+                pass
             self.lbl_live.config(
                 text="悬浮窗已开启鼠标穿透：点击会穿过去，悬浮窗自己也点不到、拖不动了。"
-                     "要挪位置用上面那排 ◀▲▼▶（不用关穿透）；要关掉勾选在这里取消「鼠标穿透」",
+                     "要挪位置用上面那排 ◀▲▼▶（不用关穿透）；要直接用鼠标拖动就先取消这个勾",
                 foreground="#ffd166")
         else:
-            self.lbl_live.config(text="悬浮窗鼠标穿透已关闭，现在可以直接拖动悬浮窗", foreground="#7ee787")
+            self.lbl_ct.config(text="")
+            try:
+                self._overlay_wrap.config(highlightbackground="#00d1ff")
+            except Exception:
+                pass
+            self.lbl_live.config(text="悬浮窗鼠标穿透已关闭，现在可以直接用鼠标拖动悬浮窗",
+                                 foreground="#7ee787")
 
     def show_overlay(self):
         self.overlay.deiconify()
