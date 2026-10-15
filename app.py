@@ -61,7 +61,19 @@ ENGINE_MODES = {
 # 记住上次的选择（含引擎、市场、品类、目标语言、模型、框选区域等）
 SETTINGS_FILE = os.path.join(ROOT, "settings.json")
 SETTINGS_KEYS = ("market", "category", "target", "model", "engine",
-                 "interval", "font", "topmost", "region")
+                 "interval", "font", "topmost", "clickthrough", "region")
+
+# 「回复助手」的常用回复。中文说法是**调过的** —— 有些中文读法会让引擎译歪，
+# 例如「支持七天无理由退换」会译成 "Apoie sete dias..."（把"支持"当"拥护"），
+# 换成「收到货7天内不满意可以退换」就译得对。这些说法都是实测过的。
+REPLY_PRESETS = [
+    ("有货·今天发", "库存充足，现在下单今天就发货"),
+    ("7天可退换", "收到货7天内不满意可以退换"),
+    ("新款质量更好", "这是最新款，质量比上一代更好"),
+    ("满2件包邮", "满两件包邮，点下方黄色购物车下单"),
+    ("点黄色购物车", "点击下方黄色购物车就能下单"),
+    ("谢谢支持", "谢谢支持，有问题随时留言"),
+]
 
 
 class RegionSelector:
@@ -141,6 +153,8 @@ class App:
         import translate_core
         translate_core.set_engine(ENGINE_MODES.get(self.var_engine.get(), "api"))
         self.apply_market()
+        if self.var_clickthrough.get():      # 上次开着穿透，启动时恢复
+            self.root.after(600, self.apply_clickthrough)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._closing = False
         self._pump_id = self.root.after(120, self.pump)
@@ -170,6 +184,8 @@ class App:
                 self.var_font.set(max(10, min(60, int(s["font"]))))
             if isinstance(s.get("topmost"), bool):
                 self.var_top.set(s["topmost"])
+            if isinstance(s.get("clickthrough"), bool):
+                self.var_clickthrough.set(s["clickthrough"])
             r = s.get("region")
             if (isinstance(r, list) and len(r) == 4
                     and all(isinstance(x, int) for x in r) and r[2] > 8 and r[3] > 8):
@@ -188,6 +204,7 @@ class App:
             "interval": float(self.var_interval.get()),
             "font": int(self.var_font.get()),
             "topmost": bool(self.var_top.get()),
+            "clickthrough": bool(self.var_clickthrough.get()),
             "region": list(self.region) if self.region else None,
         }
         try:
@@ -230,6 +247,11 @@ class App:
             lbl.config(text=f"{dst_name}翻译（同步显示在悬浮窗）")
         if getattr(self, "lbl_overlay_hdr", None) is not None:
             self.lbl_overlay_hdr.config(text=f" {dst_name}翻译 ")
+        if getattr(self, "lbl_reply_dir", None) is not None:
+            lang_name = markets.WHISPER_LANGS.get(wl, wl)
+            # 回复助手是反方向：中文 -> 市场语言（不是顶部的"翻译成"）
+            self.lbl_reply_dir.config(text=f"中文 → {lang_name}（{self.var_market.get()}）")
+            self.lbl_reply_out.config(text=f"{lang_name}译文")
 
     def on_market_change(self, _evt=None):
         import translate_core
@@ -261,6 +283,55 @@ class App:
 
     def _tr_fail(self):
         self.ui_queue.put(("error", self.TR_FAIL_HINT))
+
+    # ---------------- 回复助手（中文 -> 市场语言） ----------------
+    def _reply_target(self) -> tuple[str, str]:
+        """返回 (目标语言 locale, 显示名)。"""
+        name = self.var_market.get()
+        if name == "自定义" or not self.src_locale:
+            return (self.src_locale or "en-US"), (name or "自定义")
+        return self.src_locale, name
+
+    def reply_preset(self, text: str):
+        self.txt_reply_in.delete("1.0", "end")
+        self.txt_reply_in.insert("1.0", text)
+        self.reply_translate()
+
+    def reply_clear(self):
+        self.txt_reply_in.delete("1.0", "end")
+        self.txt_reply_out.delete("1.0", "end")
+        self.lbl_reply.config(text="")
+
+    def reply_copy(self):
+        out = self.txt_reply_out.get("1.0", "end").strip()
+        if not out:
+            self.lbl_reply.config(text="还没译文", foreground="#ffd166")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(out)
+        self.lbl_reply.config(text="已复制，粘到 TikTok 评论框即可", foreground="#7ee787")
+
+    def reply_translate(self, _evt=None):
+        import translate_core
+        text = self.txt_reply_in.get("1.0", "end").strip()
+        if not text:
+            self.lbl_reply.config(text="先输入中文", foreground="#ffd166")
+            return
+        dst, name = self._reply_target()
+        # 术语预替换：把中文术语先换成目标语言的正确说法，引擎才会沿用（见 translate_core）
+        rev = markets.get_reverse_glossary(self.var_category.get(), self.whisper_lang)
+        text = translate_core.presubstitute_terms(text, rev)
+        self.lbl_reply.config(text=f"翻译中…（{name}）", foreground="#ffd166")
+
+        def work():
+            try:
+                out = translate(text, src="zh-CN", dst=dst)
+            except Exception as e:
+                self.ui_queue.put(("reply", "", f"出错：{e}"))
+                return
+            self.ui_queue.put(("reply", out or "", ""))
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -332,7 +403,10 @@ class App:
         self.var_font = tk.IntVar(value=22)
         ttk.Spinbox(opt, from_=10, to=60, width=5, textvariable=self.var_font).pack(side="left", padx=(4, 14))
         self.var_top = tk.BooleanVar(value=True)
-        ttk.Checkbutton(opt, text="悬浮窗置顶", variable=self.var_top, command=self.apply_top).pack(side="left", padx=(0, 14))
+        ttk.Checkbutton(opt, text="悬浮窗置顶", variable=self.var_top, command=self.apply_top).pack(side="left", padx=(0, 10))
+        self.var_clickthrough = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opt, text="鼠标穿透", variable=self.var_clickthrough,
+                        command=self.apply_clickthrough).pack(side="left", padx=(0, 14))
         ttk.Button(opt, text="翻译记录另存", command=self.save_log).pack(side="right")
 
         self.lbl_src_hdr = ttk.Label(f1, text="识别的原文", style="Header.TLabel")
@@ -390,6 +464,43 @@ class App:
         ttk.Label(f2, text="提示：字幕已自动录制到「记录」文件夹，可直接给直播录像做字幕。",
                   foreground="#8f93a8").pack(anchor="w", padx=10, pady=(0, 10))
 
+        # ---- 回复助手 ----
+        f3 = ttk.Frame(nb)
+        nb.add(f3, text="  回复助手  ")
+
+        self.lbl_reply_dir = ttk.Label(f3, text="中文 → 葡萄牙语（巴西）", style="Header.TLabel")
+        self.lbl_reply_dir.pack(anchor="w", padx=10, pady=(10, 2))
+        ttk.Label(f3, text="观众问完你得回话。在这里打中文，翻成市场语言，复制走贴到 TikTok 评论框。"
+                           "（反向翻译同样会套用当前品类的术语表）",
+                  foreground="#8f93a8", wraplength=830, justify="left").pack(anchor="w", padx=10, pady=(0, 6))
+
+        pre = ttk.Frame(f3)
+        pre.pack(fill="x", padx=10, pady=(0, 4))
+        ttk.Label(pre, text="常用回复").pack(side="left", padx=(0, 6))
+        for label, text in REPLY_PRESETS:
+            ttk.Button(pre, text=label, width=12,
+                       command=lambda t=text: self.reply_preset(t)).pack(side="left", padx=2)
+
+        ttk.Label(f3, text="中文（Ctrl+Enter 翻译）").pack(anchor="w", padx=10, pady=(8, 2))
+        self.txt_reply_in = tk.Text(f3, height=5, bg="#15161c", fg="#e8e8ef", insertbackground="#fff",
+                                    font=("Microsoft YaHei UI", 13), wrap="word", relief="flat")
+        self.txt_reply_in.pack(fill="x", padx=10)
+        self.txt_reply_in.bind("<Control-Return>", self.reply_translate)
+
+        btns = ttk.Frame(f3)
+        btns.pack(fill="x", padx=10, pady=6)
+        ttk.Button(btns, text="翻译", command=self.reply_translate).pack(side="left")
+        ttk.Button(btns, text="清空", command=self.reply_clear).pack(side="left", padx=6)
+        ttk.Button(btns, text="复制译文", command=self.reply_copy).pack(side="left")
+        self.lbl_reply = ttk.Label(btns, text="", foreground="#7ee787")
+        self.lbl_reply.pack(side="left", padx=10)
+
+        self.lbl_reply_out = ttk.Label(f3, text="译文", style="Header.TLabel")
+        self.lbl_reply_out.pack(anchor="w", padx=10, pady=(8, 2))
+        self.txt_reply_out = tk.Text(f3, height=5, bg="#15161c", fg="#00ff9d",
+                                     font=("Microsoft YaHei UI", 15), wrap="word", relief="flat")
+        self.txt_reply_out.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
         # ---- 悬浮窗 ----
         self.overlay = tk.Toplevel(self.root)
         self.overlay.overrideredirect(True)
@@ -430,6 +541,49 @@ class App:
     def apply_top(self):
         self.overlay.attributes("-topmost", bool(self.var_top.get()))
         self.root.attributes("-topmost", bool(self.var_top.get()))
+
+    def _overlay_hwnds(self) -> list[int]:
+        """悬浮窗可能的窗口句柄（Tk 顶层窗口在某些情况下要取父窗口）。"""
+        try:
+            import ctypes
+            hwnd = self.overlay.winfo_id()
+            parent = ctypes.windll.user32.GetParent(hwnd)
+            return [h for h in (parent, hwnd) if h]
+        except Exception:
+            return []
+
+    def apply_clickthrough(self):
+        """开启/关闭悬浮窗的鼠标穿透（让点击穿过悬浮窗落到下面的界面上）。
+
+        Windows 下就是给窗口加上 WS_EX_TRANSPARENT 扩展样式。
+        设完会读回来确认真的生效了 —— 不然用户以为开了、实际还挡着鼠标。
+        注意：开启后悬浮窗自己就点不到了（包括那个 ✕），要关掉得回主窗口取消勾选。
+        """
+        on = bool(self.var_clickthrough.get())
+        GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT = -20, 0x00080000, 0x00000020
+        ok = False
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            for hwnd in self._overlay_hwnds():
+                ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                new = (ex | WS_EX_LAYERED | WS_EX_TRANSPARENT) if on else (ex & ~WS_EX_TRANSPARENT)
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new)
+                if bool(user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT) == on:
+                    ok = True
+                    break
+        except Exception as e:
+            self.lbl_live.config(text=f"鼠标穿透设置失败：{e}", foreground="#ff6b6b")
+            return
+        if not ok:
+            self.lbl_live.config(text="鼠标穿透设置失败（未能作用到悬浮窗）", foreground="#ff6b6b")
+            return
+        if on:
+            self.lbl_live.config(
+                text="悬浮窗已开启鼠标穿透：点击会穿过去，悬浮窗自己点不到了。"
+                     "要关掉请回主窗口取消勾选「鼠标穿透」", foreground="#ffd166")
+        else:
+            self.lbl_live.config(text="悬浮窗鼠标穿透已关闭", foreground="#7ee787")
 
     def show_overlay(self):
         self.overlay.deiconify()
@@ -688,6 +842,16 @@ class App:
                         foreground="#7ee787" if total < 2.0 else "#ffd166")
                 elif kind == "live_label":
                     self.lbl_live.config(text=msg[1], foreground="#ffd166")
+                elif kind == "reply":
+                    _, out, err = msg
+                    if err:
+                        self.lbl_reply.config(text=err, foreground="#ff6b6b")
+                    elif out:
+                        self.txt_reply_out.delete("1.0", "end")
+                        self.txt_reply_out.insert("1.0", out)
+                        self.lbl_reply.config(text="翻译完成，点「复制译文」", foreground="#7ee787")
+                    else:
+                        self.lbl_reply.config(text="翻译失败（网络？可换翻译引擎重试）", foreground="#ff6b6b")
                 elif kind == "error":
                     self.lbl_live.config(text=msg[1], foreground="#ff6b6b")
         except queue.Empty:

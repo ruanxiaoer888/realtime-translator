@@ -222,6 +222,31 @@ def get_glossary(category: str, whisper_lang: str) -> dict:
     return dict(cat.get(whisper_lang, {}))
 
 
+# 反向翻译专用别名：有些中文说法在目标语言里没有独立单词，正向术语表因此没有它，
+# 但做「中文 -> 外文」的回复时需要。只作用于回复助手方向，不影响正向识别与翻译。
+#   es：西语里"电动螺丝刀"和"电钻"都叫 taladro（正向表把 taladro 记作"电钻"）
+REVERSE_ALIAS = {
+    "es": {"电动螺丝刀": "taladro"},
+    "en": {"电动螺丝刀": "power drill"},
+}
+
+
+def get_reverse_glossary(category: str, whisper_lang: str) -> dict:
+    """把术语表反过来：{标准中文: 该语种的说法}，供「中文 -> 外文」的回复翻译用。
+
+    一个中文词可能对应多个外文说法（例如西语里 alicate 和 pinza 都是"钳子"），
+    取术语表里先出现的那个；该语种没有独立说法的词由 REVERSE_ALIAS 补上。
+    """
+    out: dict[str, str] = {}
+    cat = CATEGORIES.get(category) or {}
+    for foreign, cn in (cat.get(whisper_lang) or {}).items():
+        if cn and foreign:
+            out.setdefault(cn, foreign)
+    for cn, foreign in REVERSE_ALIAS.get(whisper_lang, {}).items():
+        out.setdefault(cn, foreign)
+    return out
+
+
 def market_names() -> list[str]:
     return list(MARKETS.keys())
 

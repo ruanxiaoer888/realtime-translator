@@ -239,21 +239,67 @@ TERM_FIXES = {
 }
 
 
-def _apply_fix(out: str, wrong: str, right: str) -> str:
-    """把 out 里的错误说法换成标准说法。
-
-    调用方（apply_glossary）已经先把"已经是正确说法"的片段保护起来了，
-    所以这里可以放心做整体替换，不会出现
-    "一字螺丝刀" -> "一字电动螺丝刀"、"电动螺丝刀" -> "电动电动螺丝刀" 这种污染。
-    """
-    if not wrong or wrong == right or wrong not in out:
-        return out
-    return out.replace(wrong, right)
-
-
 # 保护标记：替换期间把已经正确的片段临时换成一个不会出现在译文里的占位符。
 # \x00 在正常译文里不会出现，且长度短，不会影响字符位置判断。
 _PROTECT = "\x00"
+
+
+def _protect(out: str, terms) -> tuple[str, list[str]]:
+    """把"已经是正确说法"的片段临时换成占位符（长的先换，避免短词把长词切碎）。"""
+    slots: list[str] = []
+    for right in sorted({t for t in terms if t}, key=len, reverse=True):
+        if right in out:
+            out = out.replace(right, f"{_PROTECT}{len(slots)}{_PROTECT}")
+            slots.append(right)
+    return out, slots
+
+
+def _restore(out: str, slots: list[str]) -> str:
+    for i, right in enumerate(slots):
+        out = out.replace(f"{_PROTECT}{i}{_PROTECT}", right)
+    return out
+
+
+def _apply_fix(out: str, wrong: str, right: str, protect=()) -> str:
+    """把 out 里的错误说法换成标准说法，替换期间保护"已经是正确说法"的片段。
+
+    保护必须在**每一次替换前**都做，不能只在整轮开始前做一次：
+    前一条规则刚生成的正确说法，会被后一条规则当成错译再改一遍。真实踩到的例子：
+
+        输入: 一把螺丝刀和一把一字螺丝刀      （原文含 parafusadeira + chave de fenda）
+        parafusadeira 规则: 螺丝刀 -> 电动螺丝刀      得到 "一把电动螺丝刀和一把一字螺丝刀"
+        chave de fenda 规则: 螺丝刀 -> 一字螺丝刀     把刚生成的"电动螺丝刀"改成"电动一字螺丝刀" ✗
+    """
+    if not wrong or wrong == right or wrong not in out:
+        return out
+    masked, slots = _protect(out, protect)
+    masked = masked.replace(wrong, right)
+    return _restore(masked, slots)
+
+
+def presubstitute_terms(text: str, glossary: dict) -> str:
+    """把中文原文里的术语先替换成目标语言的正确说法，然后再翻译。
+
+    正向术语表是「外文 -> 中文」，做「中文 -> 外文」的回复时用不上；
+    但先做一次替换，引擎就会沿用正确的术语。实测对比：
+
+        这把电动螺丝刀很耐用，配一个工具箱
+          直译   -> Esta chave de fenda elétrica é durável e vem com uma caixa de ferramentas
+          预替换 -> Essa parafusadeira é muito resistente e vem com maleta        ← parafusadeira/maleta 都对
+        电动螺丝刀和电钻一起买更划算
+          直译   -> É mais econômico comprar uma chave de fenda elétrica e furar junto
+          预替换 -> É mais econômico comprar parafusadeira e furadeira juntas
+
+    glossary 形如 {中文: 目标语言说法}（markets.get_reverse_glossary）。长的先替换，避免短词先命中。
+    """
+    out = text or ""
+    if not out or not glossary:
+        return out
+    for cn in sorted(glossary, key=len, reverse=True):
+        target = glossary.get(cn)
+        if cn and target and cn in out:
+            out = out.replace(cn, target)
+    return out
 
 
 def _glossary_now() -> dict:
@@ -275,27 +321,20 @@ def apply_glossary(text_src: str, text_zh: str | None) -> str | None:
     if not glossary:
         return out
 
-    # 1) 先把"已经是正确说法"的片段藏起来（长的先藏，避免短词把长词切碎）。
-    #    只保护**当前术语表**里的译文：修正只会把词改成这些译文，
-    #    把它们全体保护起来，正确说法就不可能被误伤；
-    #    同时不会像"保护所有语种的译文"那样把待修的错译也一起保护掉。
-    slots: list[str] = []
-    for right in sorted({v for v in glossary.values() if v}, key=len, reverse=True):
-        if right in out:
-            out = out.replace(right, f"{_PROTECT}{len(slots)}{_PROTECT}")
-            slots.append(right)
+    # 1) 收集"当前术语表里的全部正确说法"—— 每次替换前都拿它做保护。
+    #    只保护**当前术语表**的译文：修正只会把词改成这些译文，
+    #    保护了它们，正确说法就不会被误伤；也不会像"保护所有语种的译文"
+    #    那样把待修的错译一起保护掉。
+    protect = {v for v in glossary.values() if v}
 
-    # 2) 修错译（此时正确说法不在 out 里，不可能被误伤）
+    # 2) 修错译。注意 protect 要传进去、每次替换前重新保护一遍 ——
+    #    上一条规则刚生成的正确说法，否则会被下一条规则当成错译再改一次。
     for term, right in glossary.items():
         if term.lower() not in low:
             continue
         for wrongs in TERM_FIXES.get(term, ()):
             for wrong in wrongs:
-                out = _apply_fix(out, wrong, right)
-
-    # 3) 还原被保护的正确说法
-    for i, right in enumerate(slots):
-        out = out.replace(f"{_PROTECT}{i}{_PROTECT}", right)
+                out = _apply_fix(out, wrong, right, protect)
     return out
 
 

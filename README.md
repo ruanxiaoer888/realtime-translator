@@ -5,6 +5,7 @@ It does two things on one Windows screen, fully local, **no API key required**:
 
 1. **屏幕实时翻译** — draw a box over any part of the screen (live comments, product title, seller backend, pop-ups) and it keeps translating that region automatically. No repeated screenshots.
 2. **直播同传字幕** — capture system audio (WASAPI loopback, no microphone needed), transcribe with Whisper, and show live subtitles. Exports an `.srt` for your recording.
+3. **回复助手** — 观众问完你得回话：打中文，翻成市场语言，一键复制去回评。反向翻译同样套用品类术语表。
 
 Built for people who sell in Latin America but can't read Portuguese or Spanish. **Windows only, Chinese UI.**
 
@@ -44,7 +45,7 @@ Built for people who sell in Latin America but can't read Portuguese or Spanish.
 
 这个工具把**屏幕文字**和**系统声音**两条实时通路放在一个窗口里，全部本地运行。
 
-## 两个功能
+## 三个功能
 
 ### 1. 实时屏幕翻译
 
@@ -53,6 +54,7 @@ Built for people who sell in Latin America but can't read Portuguese or Spanish.
 - 适合：直播评论区（最有价值）、商品标题、TikTok Shop 后台字段、弹窗提示、供应商资料
 - 不是"截图翻译"：不需要反复截图、不需要切换窗口
 - 框得越小越快（一次识别约 1.3 秒）
+- 悬浮窗挡住下面的界面点不到时，勾「**鼠标穿透**」让点击穿过去（关闭请回主窗口取消勾选）
 
 ### 2. 直播同传字幕
 
@@ -62,6 +64,22 @@ Built for people who sell in Latin America but can't read Portuguese or Spanish.
 - 靠声音停顿自动断句，**说完一句就出字幕**（不是固定等几秒）
 - 字幕文件可以直接给直播录像压字幕（PotPlayer / VLC / 剪映 / PR）
 - 界面实时显示 `识别x.xx + 翻译x.xx`，慢在哪一眼能看出来
+
+### 3. 回复助手（中文 → 市场语言）
+
+看懂只是一半，还得能回话。这个页签打中文 → 翻成当前市场的语言 → 一键复制，直接贴到 TikTok 评论框。
+
+- 方向跟着**市场**走：巴西出葡语、墨西哥出西语、美区出英语
+- 带 6 条常用回复预设（有货·今天发 / 7天可退换 / 新款质量更好 / 满2件包邮 / 点黄色购物车 / 谢谢支持）
+- **术语会提前替换成目标语言的正确说法**，实测有效：
+
+```
+这把电动螺丝刀很耐用，配一个工具箱
+  直译   -> Esta chave de fenda elétrica é durável e vem com uma caixa de ferramentas
+  预替换后 -> Essa parafusadeira é muito resistente e vem com maleta        ← 术语都对
+```
+
+![回复助手](screenshot-reply.png)
 
 ## 快速开始
 

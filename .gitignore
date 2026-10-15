@@ -26,6 +26,8 @@ settings.json
 
 # 翻译缓存、测试音频
 tmp/*cache*.json
+# 本机一次性辅助脚本（如权限清理）
+tmp/_*
 tmp/*.wav
 tmp/g*.txt
 
