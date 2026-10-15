@@ -277,7 +277,7 @@ def main():
 
     if ready:
         print("\n  已就绪。实时字幕：Win+Ctrl+L → 右上角齿轮 → 把语言改成对应语言。")
-        print("  想换成系统 OCR 提速（约 0.1 秒/次），告诉我一声改 screen_translate.py 即可。")
+        print("  屏幕 OCR 提速已内置：界面「屏幕识别」保持「自动」即用系统 OCR（实测约 0.012 秒/帧）。")
     elif added and staged.get("OCR") and boot <= comp:
         print("\n  语言已添加、组件已下载，但还没重启过 —— **重启一次电脑**。")
         print(f"  依据：组件写入时间晚于上次开机（组件 {time.strftime('%m-%d %H:%M', time.localtime(comp))}"

@@ -95,8 +95,14 @@ def win_ocr(engine, rgb: np.ndarray) -> tuple[str, float]:
 
 
 def recognize_latin(rgb: np.ndarray) -> tuple[str, float]:
-    """当前拉丁 RapidOCR 的识别（返回文本 + 耗时），口径与 win_ocr 一致。"""
+    """拉丁 RapidOCR 的识别（返回文本 + 耗时），口径与 win_ocr 一致。
+
+    必须**显式** set_ocr_engine("latin")。踩过的坑：st.recognize() 用的是界面上的
+    「屏幕识别」偏好（默认 auto），pt-BR 语言包装好之后 auto 会走 Windows OCR ——
+    那样这一列测的就成了 Windows OCR 自己，两列 CER 全 0.0000、耗时一模一样。
+    """
     import screen_translate as st
+    st.set_ocr_engine("latin")
     t0 = time.perf_counter()
     items = st.recognize(rgb)
     dt = time.perf_counter() - t0
@@ -201,9 +207,14 @@ def main():
 
     print("\n[3] 正式对比（同一批合成评论图）")
     import screen_translate as st
-    print(f"    对照引擎: {st.ocr_engine_name()}")
-    st.get_ocr()                                    # 先预热，避免把加载时间算进第一次
-    st.recognize(base.render(base.PT_LINES, size=18))
+    # 两个引擎都预热：否则某一列会把模型加载的 2~3 秒算进去，对比失真。
+    # 顺序必须是 win 在前、latin 在后 —— screen_translate 只缓存**一个**引擎，
+    # 最后留在缓存里的那个才不会在正式对比时被重新加载。
+    for pref in ("win", "latin"):
+        st.set_ocr_engine(pref)
+        st.get_ocr(pref)
+        st.recognize(base.render(base.PT_LINES, size=18))
+    print("    两个引擎均已预热（各自的模型加载成本已各付一次）")
 
     cases = []
     if pt:
@@ -242,7 +253,9 @@ def main():
             verdict = "准确率持平"
         speed = f"，快 {rdt/wdt:.1f} 倍" if wdt > 0 and rdt > wdt else ""
         print(f"      {label}: {verdict}{speed}")
-    print("\n    把这段结果发给助手，由他决定要不要切换。")
+    print("\n    说明：app.py 里「屏幕识别」选「自动」就会在语言包就绪时用 Windows OCR，")
+    print("    不需要改代码；想固定用某一个就选「系统 OCR（快）」或「本地模型（准）」。")
+    print("    单帧冷/热两个口径的完整数据见 python tools\\bench_ocr_speed.py")
     return 0
 
 

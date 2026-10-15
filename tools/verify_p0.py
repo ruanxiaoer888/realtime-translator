@@ -43,25 +43,46 @@ def part_a():
     print("=" * 78)
     print("A. OCR 换拉丁模型")
     print("=" * 78)
-    print(f"  拉丁模型可用: {st.latin_available()}   当前引擎: {st.ocr_engine_name()}")
+    print(f"  拉丁模型可用: {st.latin_available()}")
     check("拉丁模型已就位", st.latin_available(), st.OCR_LATIN_DIR)
-    eng = st.get_ocr()
-    rec = getattr(eng, "text_rec", None)
+
+    # ① 字典检查必须**显式**用 latin 引擎。
+    #    真实踩到过：pt-BR 语言包装好之后默认 auto 会走 Windows OCR，
+    #    而 _WinOcr 没有 text_rec 字典 —— 不指定引擎这一项就会误报 FAIL。
+    st.set_ocr_engine("latin")
+    eng_latin = st.get_ocr("latin")
+    rec = getattr(eng_latin, "text_rec", None)
     chars = set(rec.postprocess_op.character) if rec is not None else set()
     missing = [c for c in "ãçêõñâ¿" if c not in chars]
-    check("识别字典含葡/西重音字符", not missing, f"缺 {missing}" if missing else "ã ç ê õ ñ â ¿ 全在")
+    check("拉丁模型字典含葡/西重音字符", not missing, f"缺 {missing}" if missing else "ã ç ê õ ñ â ¿ 全在")
 
-    cases = [("葡语18pt", base.PT_LINES, 18, 0.0), ("葡语14pt", base.PT_LINES, 14, 0.0),
-             ("西语18pt", base.ES_LINES, 18, 0.0), ("西语14pt", base.ES_LINES, 14, 0.0)]
-    for label, lines, size, want in cases:
+    # ② 逐用例切换语种。真实踩到过：四个用例共用同一个引擎时，
+    #    西语会被葡语引擎读，CER 从 0.0000 掉到 0.0039。
+    cases = [("葡语18pt", base.PT_LINES, 18, "pt-BR"), ("葡语14pt", base.PT_LINES, 14, "pt-BR"),
+             ("西语18pt", base.ES_LINES, 18, "es-MX"), ("西语14pt", base.ES_LINES, 14, "es-MX")]
+    for label, lines, size, loc in cases:
+        st.set_ocr_locale(loc)
+        st.set_ocr_engine("auto")
         img = base.render(lines, size=size)
         ref = base.norm(" ".join(lines))
         hyp = base.norm(st.merge_lines(st.recognize(img)))
         lev, _ = base.edit_ops(ref, hyp)
         cer = lev / max(1, len(ref))
-        check(f"{label} 字错率 {cer:.4f}（要求 {want}）", cer <= 0.001, f"lev={lev}")
+        check(f"{label} 字错率 {cer:.4f}（要求 0.0）", cer <= 0.001,
+              f"lev={lev}  引擎={st.ocr_engine_name()}")
+
+    # ③ auto 的引擎选择要跟语言包状态一致：
+    #    装了对应语言包就该用系统 OCR，没装就不该用（会退回拉丁模型）。
+    st.set_ocr_locale("pt-BR")
+    st.set_ocr_engine("auto")
+    st.get_ocr("auto")
+    name = st.ocr_engine_name()
+    use_win = name.startswith("Windows")
+    check("auto 引擎选择与语言包状态一致",
+          use_win == (st.win_ocr_available("pt-BR") is not None), name)
 
     img = base.render(base.PT_LINES, size=18)
+    eng = st.get_ocr("auto")
     eng(img)
     ts = []
     for _ in range(3):

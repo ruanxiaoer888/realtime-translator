@@ -188,9 +188,9 @@ def get_ocr(engine: str = "auto"):
     """惰性加载 OCR 引擎（首次加载约 2-5 秒）。
 
     engine:
-        "auto"  系统自带 OCR 可用就用它（快约 128 倍），否则用拉丁模型，再否则中文模型
-        "win"   只用 Windows 自带 OCR（需要装对应语言包）
-        "latin" 只用拉丁模型（专治葡语/西语重音，约 1.3 秒/帧）
+        "auto"  系统自带 OCR 可用就用它（快约 90 倍），否则用拉丁模型，再否则中文模型
+        "win"   只用 Windows 自带 OCR（需要装对应语言包，实测 14 ms/帧）
+        "latin" 只用拉丁模型（专治葡语/西语重音，实测 1288 ms/帧）
         "ch"    只用自带中文模型（框选区域里是中文界面时用）
     """
     global _ocr_engine, _ocr_engine_key
@@ -236,7 +236,7 @@ def ocr_engine_name() -> str:
     """当前生效的识别引擎名字（给自检和界面显示用）。"""
     tag = win_ocr_available(_ocr_locale)
     if tag:
-        return f"Windows 自带 OCR（{tag}，约 10 毫秒/帧）"
+        return f"Windows 自带 OCR（{tag}，实测约 14 毫秒/帧）"
     if latin_available():
         return "拉丁语系模型 latin rec（约 1.3 秒/帧）"
     return "内置中文模型 ch_PP-OCRv4"
