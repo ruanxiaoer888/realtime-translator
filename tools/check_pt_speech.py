@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "libs"))
@@ -118,9 +119,48 @@ def installed_languages() -> list[str]:
     return sorted(out)
 
 
+def boot_time() -> float:
+    """上次开机时间（time.time() 时间戳）。
+
+    用 TickCount64（开机以来的毫秒数）反推，不依赖 WMI（沙箱里常被拒）。
+    """
+    return time.time() - _uptime_seconds()
+
+
+def _uptime_seconds() -> float:
+    """开机至今的秒数。Windows 上 GetTickCount64 最直接。"""
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetTickCount64() / 1000.0
+    except Exception:
+        return 0.0
+
+
+def component_time(lang: str = "pt-br") -> float:
+    """该语言组件包写入系统仓库的时间（取最新的那个 .mum）。
+
+    用途：和上次开机时间比 —— 如果组件是**开机之后**才写进来的，那确实需要重启；
+    如果**开机之前**就写好了，说明重启已经试过，问题不在重启（本机实测就是这么踩的坑）。
+    """
+    import glob
+    newest = 0.0
+    for pat in ("LanguageFeatures-OCR", "LanguageFeatures-Speech", "LanguageFeatures-Basic"):
+        for p in glob.glob(rf"C:\Windows\servicing\Packages\Microsoft-Windows-{pat}-{lang}-Package~*.mum"):
+            try:
+                newest = max(newest, os.path.getmtime(p))
+            except Exception:
+                pass
+    return newest
+
+
 def pending_reboot() -> str:
-    """系统是否有待重启。装了语言包但引擎文件还在待重启队列里是最常见的情况 ——
-    设置页会显示「已安装」，但模型文件要重启后才落盘。"""
+    """系统是否有待重启标志。
+
+    ⚠️ 注意：这几个标志在有些机器上**重启后也不会清掉**（本机实测：
+    CBS RebootPending 和 PendingFileRenameOperations 里的阿里旺旺项每次开机都还在）。
+    所以它们只能当参考，**不能**用来判断"用户没重启"——
+    要判断重启与否，请看 component_time() 和 boot_time() 的比较。
+    """
     import winreg
     reasons = []
     for path, label in (
@@ -172,13 +212,21 @@ def main():
     langs = installed_languages()
     reboot = pending_reboot()
     staged = staged_components("pt-br")
+
+    boot = boot_time()
+    comp = component_time("pt-br")
     print(f"\n已添加的语言: {', '.join(langs) if langs else '（读不到）'}")
     print("组件是否已下载到系统仓库: " +
           "，".join(f"{k}{'✓' if v else '✗'}" for k, v in staged.items()))
+    if comp:
+        print(f"组件写入时间: {time.strftime('%m-%d %H:%M:%S', time.localtime(comp))}"
+              f" ｜ 上次开机: {time.strftime('%m-%d %H:%M:%S', time.localtime(boot))}")
+        rebooted_since = boot > comp
+        print("  -> " + ("组件是开机之后写入的 —— 还没重启过" if not rebooted_since
+                         else "组件是开机之前写入的 —— **重启已经试过了，问题不在重启**"))
     if reboot:
-        print(f"⚠ 系统有待重启项: {reboot}")
-        print("  —— 组件下载后会先暂存在 WinSxS，真正生效要等重启把它们链接到系统目录。")
-        print("     设置页显示「已安装」只是功能已登记，引擎文件可能还没到位。")
+        print(f"（参考）系统有待重启标志: {reboot}")
+        print("  注意：这几个标志在有些机器上重启后也不会清掉，不能当作「没重启」的证据。")
 
     sr = check_speech_recognizers()
     print("\n【语音识别引擎】（Windows 实时字幕要用）")
@@ -212,23 +260,26 @@ def main():
     if ready:
         print("\n  已就绪。实时字幕：Win+Ctrl+L → 右上角齿轮 → 把语言改成对应语言。")
         print("  想换成系统 OCR 提速（约 0.1 秒/次），告诉我一声改 screen_translate.py 即可。")
-    elif added and reboot:
-        if staged.get("OCR") or staged.get("语音识别"):
-            print("\n  语言已添加、组件也**已经下载**了，但还没生效 —— **请重启一次电脑**。")
-            print("  依据：")
-            print(f"    · 组件已下载到系统仓库: " +
-                  "，".join(f"{k}{'✓' if v else '✗'}" for k, v in staged.items()))
-            print(f"    · 系统有待重启项: {reboot}")
-            print("  组件下载后先暂存在 WinSxS，重启才会链接到系统目录（如 C:\\Windows\\OCR\\pt-br）。")
-            print("  重启后再跑一次本脚本，就能看到 pt 变成「已就绪」。")
-        else:
-            print("\n  语言已添加、系统也挂着待重启，但**没找到 OCR / 语音组件的下载记录**。")
-            print("  建议：设置 → 时间和语言 → 语言和区域 → 葡萄牙语(巴西) → ⋯ → 语言选项，")
-            print("        确认「语言包」和「增强的语音识别」都已安装，然后重启。")
-    elif added and not reboot:
-        print("\n  语言已添加、也没有待重启项，但引擎仍没就绪 —— 可能 OCR / 语音组件没勾选。")
+    elif added and staged.get("OCR") and boot <= comp:
+        print("\n  语言已添加、组件已下载，但还没重启过 —— **重启一次电脑**。")
+        print(f"  依据：组件写入时间晚于上次开机（组件 {time.strftime('%m-%d %H:%M', time.localtime(comp))}"
+              f" > 开机 {time.strftime('%m-%d %H:%M', time.localtime(boot))}）。")
+        print("  重启后再跑一次本脚本。")
+    elif added and staged.get("OCR"):
+        print("\n  语言已添加、组件也已下载，**但重启过了仍然没生效** —— 不是重启的问题。")
+        print("  实测原因：Windows 把这些包当作「未安装的功能(FOD)」跳过了，")
+        print("  CBS 日志里是这一句：Skip FODs not currently installed: "
+              "Microsoft-Windows-LanguageFeatures-OCR-pt-br-Package")
+        print("  需要在**管理员 PowerShell** 里补装这两条命令：")
+        print("      Add-WindowsCapability -Online -Name 'Language.OCR~~~pt-BR~0.0.1.0'")
+        print("      Add-WindowsCapability -Online -Name 'Language.Speech~~~pt-BR~0.0.1.0'")
+        print("  跑完重启，再回来跑一次本脚本。")
+        print("  （先看状态：Get-WindowsCapability -Online | "
+              "Where-Object Name -like '*pt-BR*' | Select Name,State）")
+    elif added:
+        print("\n  语言已添加，但没有组件下载记录 —— OCR / 语音组件可能没勾选。")
         print("  设置 → 时间和语言 → 语言和区域 → 葡萄牙语(巴西) → ⋯ → 语言选项")
-        print("  确认「语言包」和「增强的语音识别」都显示已安装。")
+        print("  确认「语言包」和「增强的语音识别」都显示已安装，装完重启。")
     else:
         print("\n  还没装。装法：")
         print("    设置 → 时间和语言 → 语言和区域 → 添加语言 → 搜 Português (Brasil) → 下一步")
