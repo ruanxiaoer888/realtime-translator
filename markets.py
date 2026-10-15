@@ -128,6 +128,20 @@ CATEGORIES = {
             "esmerilhadeira": "角磨机", "serra circular": "圆锯",
             "kit de ferramentas": "工具套装", "maleta": "工具箱",
             "bateria": "电池", "carregador": "充电器",
+            # 下面这些是拿真实直播录音（tmp\cap.wav）对照补的：
+            # 术语表里有的词全听对了，不在表里的被听歪 ——
+            #   sextavados  -> "sexta, vados"
+            #   philips e fenda -> "filhos de fenda"
+            # （提示词就是由本表拼出来的，所以补到这里等于同时喂给识别模型）
+            "sextavado": "内六角", "chave philips": "十字螺丝刀",
+            "philips": "十字", "fenda": "一字螺丝刀",
+            "martelete": "电锤", "ponteira": "批头", "adaptador": "转接头",
+            "parafuso": "螺丝", "porca": "螺母", "arruela": "垫圈",
+            "chave inglesa": "活动扳手", "nível": "水平尺", "estilete": "美工刀",
+            "lixadeira": "砂光机", "serra tico-tico": "曲线锯",
+            "bivolt": "双电压", "voltagem": "电压",
+            "espelho": "镜子", "quadro": "画框", "móveis": "家具",
+            "montar": "组装", "desmontar": "拆卸",
         },
         "es": {
             "taladro": "电钻", "destornillador": "螺丝刀",
@@ -137,6 +151,16 @@ CATEGORIES = {
             "mecha": "钻头", "amoladora": "角磨机", "esmeriladora": "角磨机",
             "sierra circular": "圆锯", "caja de herramientas": "工具箱",
             "batería": "电池", "cargador": "充电器",
+            # 与葡语表对齐补齐（同一批品类的常见说法）
+            "llave de dado": "套筒扳手", "desarmador": "螺丝刀",
+            "destornillador de estrella": "十字螺丝刀", "phillips": "十字",
+            "plana": "一字", "rotomartillo": "电锤", "punta": "批头",
+            "adaptador": "转接头", "tornillo": "螺丝", "tuerca": "螺母",
+            "rondana": "垫圈", "nivel": "水平尺", "cúter": "美工刀",
+            "lijadora": "砂光机", "caladora": "曲线锯",
+            "bivolt": "双电压", "voltaje": "电压",
+            "espejo": "镜子", "cuadro": "画框", "muebles": "家具",
+            "armar": "组装", "desarmar": "拆卸",
         },
         "en": {
             "power drill": "电钻", "drill": "电钻", "screwdriver": "螺丝刀",
@@ -145,6 +169,14 @@ CATEGORIES = {
             "drill bit": "钻头", "angle grinder": "角磨机", "circular saw": "圆锯",
             "tool box": "工具箱", "toolbox": "工具箱", "battery": "电池",
             "charger": "充电器",
+            # 与葡语/西语表对齐补齐
+            "hex socket": "内六角套筒", "phillips": "十字",
+            "flathead": "一字", "hammer drill": "电锤", "bit": "批头",
+            "adapter": "转接头", "screw": "螺丝", "nut": "螺母",
+            "washer": "垫圈", "level": "水平尺", "utility knife": "美工刀",
+            "sander": "砂光机", "jigsaw": "曲线锯",
+            "voltage": "电压", "mirror": "镜子", "picture frame": "画框",
+            "furniture": "家具", "assemble": "组装", "disassemble": "拆卸",
         },
     },
     "汽车与摩托": {

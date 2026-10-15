@@ -217,6 +217,22 @@ TERM_FIXES = {
     "transmissão ao vivo": [("播放", "现场")],
     "live": [("现场",)],
     "material": [("这种材",)],
+    # 五金工具（葡语）—— 拿真实直播录音补的：
+    #   philips e fenda 被译成"飞利浦和插槽"、bivolt 直接没翻
+    "sextavado": [("十六进制", "六角形")],
+    "chave philips": [("十字螺丝刀",)],
+    "philips": [("飞利浦",)],
+    "fenda": [("插槽", "槽")],
+    "bivolt": [("bivolt", "双伏特")],
+    "martelete": [("锤子", "大锤")],
+    "ponteira": [("尖端", "提示")],
+    "porca": [("猪",)],
+    "arruela": [("洗衣机",)],
+    "nível": [("等级", "级别")],
+    "lixadeira": [("砂纸机",)],
+    "voltagem": [("电压",)],
+    "montar": [("登上", "设置")],
+    "desmontar": [("拆除",)],
     # 汽车与摩托（葡语）
     "pastilha de freio": [("刹车垫", "刹车皮")],
     "óleo lubrificante": [("润滑剂", "润滑油剂")],
@@ -345,7 +361,14 @@ def apply_glossary(text_src: str, text_zh: str | None) -> str | None:
     #    只保护**当前术语表**的译文：修正只会把词改成这些译文，
     #    保护了它们，正确说法就不会被误伤；也不会像"保护所有语种的译文"
     #    那样把待修的错译一起保护掉。
-    protect = {v for v in glossary.values() if v}
+    #
+    #    但要排除"某个待修错译的子串"——真实踩到过：
+    #    新加术语 parafuso -> 螺丝 之后，"螺丝"进了保护集，而"螺丝刀"正是
+    #    要被修成"电动螺丝刀"的错译，保护了"螺丝"就等于把"螺丝刀"整个护住了，
+    #    所有螺丝刀相关的修正全部静默失效（verify_p0 两条 FAIL）。
+    all_wrongs = {w for term in glossary for grp in TERM_FIXES.get(term, ()) for w in grp}
+    protect = {v for v in glossary.values()
+               if v and not any(v != w and v in w for w in all_wrongs)}
 
     # 2) 修错译。注意 protect 要传进去、每次替换前重新保护一遍 ——
     #    上一条规则刚生成的正确说法，否则会被下一条规则当成错译再改一次。
