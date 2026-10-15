@@ -7,12 +7,16 @@
      必须有 pt-BR 的光学字符识别组件
 装完之后用这个脚本确认装好了没有。
 
+**特别提醒**：语言包在设置页显示「已安装」不等于能用 —— OCR / 语音的模型文件
+要等重启才落盘。这个脚本会检测待重启状态，避免把「等重启」误判成「没装」。
+
 运行（在项目根目录下）:
     python tools\\check_pt_speech.py
 """
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,19 +30,51 @@ except Exception:
 
 TARGETS = {"pt": "葡萄牙语（巴西）", "es": "西班牙语"}
 
+# 常见 LCID -> 语言标记（语音识别器的 token 名里带 LCID，如 MS-2052-110-WINMO-DNN）
+LCID = {
+    1033: "en-US", 2052: "zh-CN", 1028: "zh-TW",
+    1046: "pt-BR", 2070: "pt-PT",
+    1034: "es-ES", 3082: "es-ES", 2058: "es-MX", 1033 + 4096: "es-419",
+}
 
-def check_speech_recognizers() -> tuple[bool, list[str], str]:
-    """用 WinRT 问系统装了哪些语音识别器。"""
-    try:
-        from winsdk.windows.media.speech_recognition import SpeechRecognizer
-        tags = [r.language.language_tag for r in SpeechRecognizer.installed_recognizers]
-        return True, tags, ""
-    except Exception as e:
-        return False, [], f"{type(e).__name__}: {str(e)[:70]}"
+SPEECH_KEYS = (
+    (r"SOFTWARE\Microsoft\Speech_OneCore\Recognizers\Tokens", "OneCore（实时字幕用这个）"),
+    (r"SOFTWARE\Microsoft\Speech\Recognizers\Tokens", "经典 SAPI"),
+)
+OCR_KEYS = (r"SOFTWARE\Microsoft\Speech_OneCore\Recognizers\Tokens",)
+
+
+def check_speech_recognizers() -> dict[str, list[str]]:
+    """读注册表里注册了哪些语音识别器。
+
+    不走 WinRT：winsdk 没有暴露 SpeechRecognizer 的静态属性 installed_recognizers，
+    调它会 AttributeError。注册表更直接，也更好解释。
+    """
+    import winreg
+    out: dict[str, list[str]] = {}
+    for path, label in SPEECH_KEYS:
+        found: list[str] = []
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as k:
+                i = 0
+                while True:
+                    try:
+                        name = winreg.EnumKey(k, i)
+                    except OSError:
+                        break
+                    m = re.search(r"MS-(\d+)-", name)
+                    if m:
+                        lcid = int(m.group(1))
+                        found.append(LCID.get(lcid, f"LCID {lcid}"))
+                    i += 1
+        except Exception:
+            pass
+        out[label] = sorted(set(found))
+    return out
 
 
 def check_ocr_languages() -> tuple[bool, list[str], str]:
-    """系统自带 OCR 支持哪些语言。"""
+    """系统自带 OCR 支持哪些语言（WinRT，这条路是好的）。"""
     try:
         from winsdk.windows.media.ocr import OcrEngine
         tags = [l.language_tag for l in OcrEngine.available_recognizer_languages]
@@ -48,7 +84,7 @@ def check_ocr_languages() -> tuple[bool, list[str], str]:
 
 
 def check_engine_dirs() -> dict[str, list[str]]:
-    """看语音引擎目录里有哪些语言（读不到就跳过，不算失败）。"""
+    """看语音引擎 / OCR 的模型目录里有哪些语言（辅助参考）。"""
     out: dict[str, list[str]] = {}
     for d in (r"C:\Windows\Speech\Engines\SR", r"C:\Windows\Speech_OneCore\Engines\SR",
               r"C:\Windows\Speech\Common", r"C:\Windows\OCR"):
@@ -59,18 +95,71 @@ def check_engine_dirs() -> dict[str, list[str]]:
     return out
 
 
+def installed_languages() -> list[str]:
+    """用户在系统里添加了哪些语言。
+
+    位置：HKCU\\Control Panel\\International\\User Profile，每种语言是一个**子键**
+    （en-US / pt-BR / zh-Hans-CN），不是值 —— 按值枚举会一个都读不到。
+    """
+    import winreg
+    out: list[str] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Control Panel\International\User Profile") as k:
+            i = 0
+            while True:
+                try:
+                    out.append(winreg.EnumKey(k, i))
+                except OSError:
+                    break
+                i += 1
+    except Exception:
+        pass
+    return sorted(out)
+
+
+def pending_reboot() -> str:
+    """系统是否有待重启。装了语言包但引擎文件还在待重启队列里是最常见的情况 ——
+    设置页会显示「已安装」，但模型文件要重启后才落盘。"""
+    import winreg
+    reasons = []
+    for path, label in (
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending", "组件安装"),
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired", "Windows 更新"),
+    ):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path):
+                reasons.append(label)
+        except Exception:
+            pass
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\Session Manager") as k:
+            val, _t = winreg.QueryValueEx(k, "PendingFileRenameOperations")
+            if val:
+                reasons.append(f"待替换文件 {len(val)} 条")
+    except Exception:
+        pass
+    return "、".join(reasons)
+
+
 def main():
     print("=" * 66)
     print("系统语言组件检查（葡萄牙语 / 西班牙语）")
     print("=" * 66)
 
-    ok_sr, sr_tags, sr_err = check_speech_recognizers()
-    print("\n【语音识别器】（Windows 实时字幕要用）")
-    if ok_sr:
-        print(f"  已安装: {', '.join(sr_tags) if sr_tags else '（无）'}")
-    else:
-        print(f"  查询失败: {sr_err}")
-        print("  （不影响本工具的直播同传，那条路用 faster-whisper，不依赖系统语言包）")
+    langs = installed_languages()
+    reboot = pending_reboot()
+    print(f"\n已添加的语言: {', '.join(langs) if langs else '（读不到）'}")
+    if reboot:
+        print(f"⚠ 系统有待重启项: {reboot}")
+        print("  —— 语言包装好后，OCR / 语音的模型文件往往要重启才落盘。")
+        print("     设置页显示「已安装」只是功能已登记，引擎文件可能还没到位。")
+
+    sr = check_speech_recognizers()
+    print("\n【语音识别引擎】（Windows 实时字幕要用）")
+    for label, tags in sr.items():
+        print(f"  {label}: {', '.join(tags) if tags else '（无）'}")
 
     ok_ocr, ocr_tags, ocr_err = check_ocr_languages()
     print("\n【系统 OCR 语言】（把屏幕翻译提速到约 0.1 秒/次要用）")
@@ -79,25 +168,35 @@ def main():
     else:
         print(f"  查询失败: {ocr_err}")
 
-    print("\n【语音引擎目录】（辅助参考）")
+    print("\n【模型目录】（辅助参考）")
     for d, names in check_engine_dirs().items():
-        print(f"  {d}")
-        print(f"      {', '.join(names) if names else '（读不到或为空）'}")
+        print(f"  {d}\n      {', '.join(names) if names else '（读不到或为空）'}")
 
+    sr_tags = [t for tags in sr.values() for t in tags]
     print("\n" + "=" * 66)
     print("结论")
     print("=" * 66)
-    verdict = []
     for code, label in TARGETS.items():
         has_sr = any(t.lower().startswith(code) for t in sr_tags)
         has_ocr = any(t.lower().startswith(code) for t in ocr_tags)
-        verdict.append((label, has_sr, has_ocr))
-        print(f"  {label:14s} 语音识别 {'已就绪' if has_sr else '未安装'} ｜ "
-              f"OCR {'已就绪' if has_ocr else '未安装'}")
+        print(f"  {label:14s} 语音识别 {'已就绪' if has_sr else '未就绪'} ｜ "
+              f"OCR {'已就绪' if has_ocr else '未就绪'}")
 
-    if any(v[1] or v[2] for v in verdict):
-        print("\n  已装好。实时字幕：Win+Ctrl+L → 右上角齿轮 → 把语言改成对应语言。")
-        print("  想换成系统 OCR 提速，告诉我一声改 screen_translate.py 即可。")
+    ready = any(t.lower().startswith(c) for t in sr_tags + ocr_tags for c in TARGETS)
+    added = any(l.lower().startswith(c) for c in TARGETS for l in langs)
+
+    if ready:
+        print("\n  已就绪。实时字幕：Win+Ctrl+L → 右上角齿轮 → 把语言改成对应语言。")
+        print("  想换成系统 OCR 提速（约 0.1 秒/次），告诉我一声改 screen_translate.py 即可。")
+    elif added and reboot:
+        print("\n  语言已经添加、组件也装过了，但**还没生效 —— 请重启一次电脑**。")
+        print(f"  依据：系统有待重启项（{reboot}），而这些模型文件要重启后才落盘。")
+        print("  重启后再跑一次本脚本，就能看到 pt 变成「已就绪」。")
+        print("  （设置页此时已经显示「已安装」是正常的 —— 那只是功能登记，引擎文件还没到位。）")
+    elif added and not reboot:
+        print("\n  语言已添加、也没有待重启项，但引擎仍没就绪 —— 可能 OCR / 语音组件没勾选。")
+        print("  设置 → 时间和语言 → 语言和区域 → 葡萄牙语(巴西) → ⋯ → 语言选项")
+        print("  确认「语言包」和「增强的语音识别」都显示已安装。")
     else:
         print("\n  还没装。装法：")
         print("    设置 → 时间和语言 → 语言和区域 → 添加语言 → 搜 Português (Brasil) → 下一步")

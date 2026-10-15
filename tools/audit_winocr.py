@@ -128,12 +128,27 @@ def status_only():
     print(f"语音识别引擎  : {', '.join(sr) if sr else '(读不到，可能被沙箱拦了)'}")
     print(f"葡语语音引擎  : {'已就绪 ' + str(pt_sr) if pt_sr else '还没装上'}")
 
+    # 待重启判断：语言包在设置页显示「已安装」不等于生效，模型文件要重启才落盘。
+    # 这个判断从 check_pt_speech.py 复用，避免两处各写一套。
+    try:
+        from check_pt_speech import installed_languages, pending_reboot
+        reboot = pending_reboot()
+        added = installed_languages()
+    except Exception:
+        reboot, added = "", []
+
     if pt:
         print("\n葡语 OCR 已可用 -> 跑完整对比: python tools\\audit_winocr.py")
+    elif reboot and any(l.lower().startswith("pt") for l in added):
+        print("\n**请重启电脑。** 语言包已装、pt-BR 也已添加，但引擎文件还没落盘。")
+        print(f"  依据：系统有待重启项（{reboot}）。")
+        print("  设置页显示「已安装」只是功能登记；重启后再跑一次本脚本即可看到葡语 OCR 就绪。")
+        print("  （更详细的检查: python tools\\check_pt_speech.py）")
     else:
-        print("\n还在下载。装完这两项再继续：")
+        print("\n葡语组件还没装。需要装这两项：")
         print("   · 光学字符识别（'所需的语言功能'里自动带的，对应上面的葡语 OCR）")
         print("   · 增强的语音识别（实时字幕要用，对应上面的葡语语音引擎）")
+        print("  装法见 python tools\\check_pt_speech.py 的输出。")
     return 0
 
 
