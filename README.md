@@ -3,13 +3,14 @@
 **A real-time screen & audio translator for cross-border sellers — built for TikTok Shop in Brazil / Mexico / Argentina / US.**
 It does two things on one Windows screen, fully local, **no API key required**:
 
-1. **屏幕实时翻译** — draw a box over any part of the screen (live comments, product title, seller backend, pop-ups) and it keeps translating that region into Chinese automatically. No repeated screenshots.
-2. **直播同传字幕** — capture system audio (WASAPI loopback, no microphone needed), transcribe with Whisper, and show live Chinese subtitles. Exports an `.srt` for your recording.
+1. **屏幕实时翻译** — draw a box over any part of the screen (live comments, product title, seller backend, pop-ups) and it keeps translating that region automatically. No repeated screenshots.
+2. **直播同传字幕** — capture system audio (WASAPI loopback, no microphone needed), transcribe with Whisper, and show live subtitles. Exports an `.srt` for your recording.
 
 Built for people who sell in Latin America but can't read Portuguese or Spanish. **Windows only, Chinese UI.**
 
 > ⚠️ Not affiliated with, endorsed by, or connected to TikTok / TikTok Shop / ByteDance.
-> ⚠️ 开源前请先读 [许可证与免责声明](#许可证与免责声明)：**默认的离线翻译模型 NLLB 是禁止商用许可**，商用请改用 M2M-100。
+> ⚠️ 使用前请先读 [许可证与免责声明](#许可证与免责声明)：**默认只用在线接口**；可选的本地离线模型
+> NLLB 是 **CC-BY-NC-4.0（禁止商用）**，只有你主动切到本地模式时才会启用。
 
 ![主界面](screenshot.png)
 
@@ -207,7 +208,7 @@ CATEGORIES = {
 
 **5. 在线接口比本地小模型强得多**
 同样 10 个五金术语，在线接口命中 9/10，NLLB-600M 只有 5/10。
-所以默认策略是**在线优先 + 本地兜底**，而不是一上来就用本地模型。
+所以顺序是**在线优先**，本地模型只在你主动切换后才参与 —— 默认根本不会碰本地模型。
 
 **6. 一个通道被墙，能把整条链路拖死**（这个最坑）
 Google 那条接口在国内时通时不通。不通时每次调用要白等超时，而字幕是**同步**翻译的，于是：
@@ -321,7 +322,8 @@ M2M-100 在 pt→zh 这种低资源方向上本来就远弱于 NLLB。
 **其它**：
 
 - 三个在线翻译通道（Google `clients5` / MyMemory / 有道 `aidemo`）都是**非官方公开接口**，随时可能变更或失效。
-  用它们等于把待翻译文本发给了第三方，介意的话请只用本地模型（界面上选「仅本地NLLB」）。
+  用它们等于把待翻译文本发给了第三方，介意的话请切到本地模型（界面上选「仅本地模型」，
+  需先 `python fetch_nllb.py`，并注意其 NC 许可）。
 - 本项目**不包含也不分发** iPhoneMirror 等投屏软件，仅与其配合使用。
 - 屏幕 OCR 会把屏幕内容发送给翻译接口（如果用的是在线通道）。涉及敏感信息的画面请切到「仅本地模型」。
 - 本项目与 TikTok / TikTok Shop / ByteDance 无任何关联。
