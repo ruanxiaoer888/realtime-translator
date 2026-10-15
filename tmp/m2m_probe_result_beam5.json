@@ -1,0 +1,81 @@
+{
+  "DL": {
+    "bytes": 0,
+    "fresh": 0,
+    "skipped": 0,
+    "skipped_bytes": 0,
+    "failed": []
+  },
+  "STATE": {
+    "tok_route": "A: AutoTokenizer.from_pretrained(dir) 直接可用",
+    "tok_notes": [],
+    "tgt_token": "__zh__",
+    "src_token": "__pt__",
+    "load_used": "cuda/int8_float16",
+    "pt_out": [
+      "亲爱的,欢迎来到我的生活。",
+      "今天,我找到了一个非常强大的<unk>子。",
+      "它配备了完整的行李箱、12V电池和快速充电器。",
+      "价格是专门的广播,享受和点击黄色车。",
+      "个人,看看这种<unk>是多么的耐用,看看材料的质量。",
+      "到圣保罗的货物费用是多少?"
+    ],
+    "pt_health": {
+      "Olá pessoal, bem-vindos a minha live.": [],
+      "Hoje eu trouxe uma parafusadeira muito potente.": [
+        "含 <unk>：原文里的词模型不认识"
+      ],
+      "Essa furadeira vem com maleta completa, bateria de 12V e carregador rápido.": [],
+      "O preço está exclusivo na transmissão, aproveitem e cliquem no carrinho amarelo.": [],
+      "Pessoal, olha como esse alicate é resistente, olha a qualidade desse material.": [
+        "含 <unk>：原文里的词模型不认识"
+      ],
+      "Quanto custa o frete para São Paulo?": []
+    },
+    "raw_outputs": [
+      {
+        "pt": "Olá pessoal, bem-vindos a minha live.",
+        "zh": "亲爱的,欢迎来到我的生活。",
+        "health": []
+      },
+      {
+        "pt": "Hoje eu trouxe uma parafusadeira muito potente.",
+        "zh": "今天,我找到了一个非常强大的<unk>子。",
+        "health": [
+          "含 <unk>：原文里的词模型不认识"
+        ]
+      },
+      {
+        "pt": "Essa furadeira vem com maleta completa, bateria de 12V e carregador rápido.",
+        "zh": "它配备了完整的行李箱、12V电池和快速充电器。",
+        "health": []
+      },
+      {
+        "pt": "O preço está exclusivo na transmissão, aproveitem e cliquem no carrinho amarelo.",
+        "zh": "价格是专门的广播,享受和点击黄色车。",
+        "health": []
+      },
+      {
+        "pt": "Pessoal, olha como esse alicate é resistente, olha a qualidade desse material.",
+        "zh": "个人,看看这种<unk>是多么的耐用,看看材料的质量。",
+        "health": [
+          "含 <unk>：原文里的词模型不认识"
+        ]
+      },
+      {
+        "pt": "Quanto custa o frete para São Paulo?",
+        "zh": "到圣保罗的货物费用是多少?",
+        "health": []
+      }
+    ],
+    "es_health": {
+      "Las balatas y el aceite lubricante son originales.": []
+    },
+    "es_out": [
+      "香水和油是原始的。"
+    ],
+    "bare_spm_out": "今天,我带来了一个非常强大的 parafusadeira。",
+    "no_src_token_out": "今天,我带来了一个非常强大的<unk>子。",
+    "no_target_prefix_out": "Aujourd’hui, j’ai apporté une puissante baguette."
+  }
+}

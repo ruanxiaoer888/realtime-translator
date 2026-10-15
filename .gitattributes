@@ -1,0 +1,11 @@
+# 行尾统一：仓库里存 LF，Windows 上检查出 CRLF 给需要它的脚本
+* text=auto
+
+# cmd / PowerShell 对行尾敏感，强制 CRLF
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制，别做任何转换
+*.png binary
+*.ico binary
+*.onnx binary
