@@ -46,24 +46,179 @@ def latin_available() -> bool:
     return latin_model_paths()[0] is not None
 
 
+# ---------------------------------------------------------------- Windows 自带 OCR
+# 为什么值得接：同一张 900x420 的图（跟真实一屏差不多），实测
+#     Windows 自带 OCR   约 10 ms
+#     本地拉丁模型       约 1335 ms
+# 快约 128 倍。代价是必须先装对应语言包（设置 → 语言和区域 → 添加语言 →
+# Português (Brasil)，其中"光学字符识别"是随语言包自动带的）。
+# 数据来自 tools\audit_winocr.py，可以用它复测。
+
+# 市场 locale -> 系统识别器语言标签（按优先顺序找）
+WIN_OCR_TAGS = {
+    "pt-BR": ("pt-BR", "pt"),
+    "pt": ("pt-BR", "pt"),
+    "es-MX": ("es-MX", "es-ES", "es"),
+    "es-AR": ("es-AR", "es-ES", "es"),
+    "es": ("es-ES", "es-MX", "es"),
+    "en-US": ("en-US", "en"),
+    "en": ("en-US", "en"),
+}
+
+_ocr_locale = "pt-BR"          # 由界面按市场注入，决定 Windows OCR 用哪个语种
+_ocr_pref = "auto"             # 界面上的「屏幕识别」选择：auto / win / latin / ch
+
+
+def set_ocr_engine(pref: str):
+    """界面上的引擎偏好。recognize() 会用它调 get_ocr()。"""
+    global _ocr_pref
+    _ocr_pref = pref or "auto"
+
+
+def get_ocr_engine_pref() -> str:
+    return _ocr_pref
+
+
+def set_ocr_locale(locale: str):
+    """告诉屏幕识别当前市场是哪个语种（决定用哪个系统识别器）。"""
+    global _ocr_locale, _ocr_engine, _ocr_engine_key
+    new = locale or "pt-BR"
+    if new != _ocr_locale:
+        # 换市场后要重新挑引擎（原来缓存的可能是别的语种的识别器）
+        _ocr_engine = None
+        _ocr_engine_key = None
+    _ocr_locale = new
+
+
+def get_ocr_locale() -> str:
+    return _ocr_locale
+
+
+def win_ocr_tags_available() -> list[str]:
+    """系统里装了哪些 OCR 语言（读不到就返回空）。"""
+    try:
+        from winsdk.windows.media.ocr import OcrEngine
+        return [l.language_tag for l in OcrEngine.available_recognizer_languages]
+    except Exception:
+        return []
+
+
+def win_ocr_available(locale: str = "") -> str | None:
+    """系统自带 OCR 能不能用于这个语种；能则返回该识别器的语言标签。
+
+    先按精确标签找（pt-BR），找不到再按主语言前缀找（es-AR 可以先用 es-ES 的识别器）。
+    """
+    have = win_ocr_tags_available()
+    if not have:
+        return None
+    loc = locale or _ocr_locale
+    for want in WIN_OCR_TAGS.get(loc, (loc,)):
+        for h in have:
+            if h.lower() == want.lower():
+                return h
+    base = (loc or "").split("-")[0].lower()
+    if base:
+        for h in have:
+            if h.lower().split("-")[0] == base:
+                return h
+    return None
+
+
+class _WinOcr:
+    """Windows 自带 OCR 的适配层，接口跟 RapidOCR 对齐：engine(rgb) -> (result, elapse)。
+
+    对齐之后上层的 recognize()/merge_lines() 一行都不用改。
+    Windows OCR 不返回置信度，统一给 1.0（merge_lines 的阈值是 0.5，能过）。
+    """
+
+    def __init__(self, tag: str):
+        from winsdk.windows.globalization import Language
+        from winsdk.windows.media.ocr import OcrEngine
+        self.tag = tag
+        self._engine = OcrEngine.try_create_from_language(Language(tag))
+        if self._engine is None:
+            raise RuntimeError(f"系统 OCR 无法创建 {tag} 识别器")
+
+    @staticmethod
+    def _bitmap(rgb):
+        import numpy as np
+        from winsdk.windows.graphics.imaging import (
+            BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap)
+        from winsdk.windows.storage.streams import DataWriter
+        h, w = rgb.shape[:2]
+        # Windows 要 BGRA8；grab() 给的是 RGB，这里换通道顺序并补 alpha
+        bgra = np.empty((h, w, 4), dtype=np.uint8)
+        bgra[:, :, 0] = rgb[:, :, 2]      # B
+        bgra[:, :, 1] = rgb[:, :, 1]      # G
+        bgra[:, :, 2] = rgb[:, :, 0]      # R
+        bgra[:, :, 3] = 255               # A
+        # 必须走 DataWriter 变成 WinRT 的 IBuffer —— 直接传 bytes 会
+        # "TypeError: convert_to returned null"
+        writer = DataWriter()
+        writer.write_bytes(bgra.tobytes())
+        return SoftwareBitmap.create_copy_from_buffer(
+            writer.detach_buffer(), BitmapPixelFormat.BGRA8, w, h,
+            BitmapAlphaMode.PREMULTIPLIED)
+
+    async def _run(self, bitmap):
+        return await self._engine.recognize_async(bitmap)
+
+    def __call__(self, rgb):
+        import asyncio
+        t0 = time.time()
+        sb = self._bitmap(rgb)
+        # recognize_async 返回的是 IAsyncOperation，不是协程 ——
+        # 直接 asyncio.run(op) 会 "a coroutine was expected"，必须用 async 包一层再 await
+        res = asyncio.run(self._run(sb))
+        out = []
+        for line in res.lines:
+            words = list(line.words)
+            if not words:
+                continue
+            rs = [w.bounding_rect for w in words]
+            x1 = min(r.x for r in rs)
+            y1 = min(r.y for r in rs)
+            x2 = max(r.x + r.width for r in rs)
+            y2 = max(r.y + r.height for r in rs)
+            out.append(([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], line.text, 1.0))
+        return out, [time.time() - t0]
+
+
 def get_ocr(engine: str = "auto"):
-    """惰性加载 RapidOCR（首次加载约 2-5 秒）。
+    """惰性加载 OCR 引擎（首次加载约 2-5 秒）。
 
     engine:
-        "auto"  优先用拉丁模型，缺文件时退回自带中文模型（默认）
-        "latin" 只用拉丁模型（专治葡语/西语重音）
+        "auto"  系统自带 OCR 可用就用它（快约 128 倍），否则用拉丁模型，再否则中文模型
+        "win"   只用 Windows 自带 OCR（需要装对应语言包）
+        "latin" 只用拉丁模型（专治葡语/西语重音，约 1.3 秒/帧）
         "ch"    只用自带中文模型（框选区域里是中文界面时用）
     """
     global _ocr_engine, _ocr_engine_key
     rec, keys = latin_model_paths()
+    win_tag = win_ocr_available(_ocr_locale)
+
+    if engine == "win" and not win_tag:
+        engine = "latin" if rec else "ch"
     if engine == "latin" and not rec:
         engine = "ch"
     if engine == "auto":
-        engine = "latin" if rec else "ch"
+        if win_tag:
+            engine = "win"
+        else:
+            engine = "latin" if rec else "ch"
 
+    key = f"win:{win_tag}" if engine == "win" else engine
     with _ocr_lock:
-        if _ocr_engine is not None and _ocr_engine_key == engine:
+        if _ocr_engine is not None and _ocr_engine_key == key:
             return _ocr_engine
+        if engine == "win":
+            try:
+                _ocr_engine = _WinOcr(win_tag)
+                _ocr_engine_key = key
+                return _ocr_engine
+            except Exception:
+                engine = "latin" if rec else "ch"   # 系统 OCR 建不起来也不能让功能停掉
+                key = engine
         from rapidocr_onnxruntime import RapidOCR
         if engine == "latin":
             try:
@@ -78,8 +233,13 @@ def get_ocr(engine: str = "auto"):
 
 
 def ocr_engine_name() -> str:
-    """当前生效的识别模型名字（给自检和界面显示用）。"""
-    return "拉丁语系模型 latin rec" if latin_available() else "内置中文模型 ch_PP-OCRv4"
+    """当前生效的识别引擎名字（给自检和界面显示用）。"""
+    tag = win_ocr_available(_ocr_locale)
+    if tag:
+        return f"Windows 自带 OCR（{tag}，约 10 毫秒/帧）"
+    if latin_available():
+        return "拉丁语系模型 latin rec（约 1.3 秒/帧）"
+    return "内置中文模型 ch_PP-OCRv4"
 
 
 # 画面指纹：32x16 个格子，每格取**块内所有像素的灰度均值**。
@@ -132,7 +292,7 @@ def grab(region):
 
 def recognize(rgb) -> list[tuple[str, float]]:
     """对图像做 OCR，返回 [(文本, 置信度), ...]，按从上到下、从左到右排序。"""
-    engine = get_ocr()
+    engine = get_ocr(_ocr_pref)
     result, _ = engine(rgb)
     if not result:
         return []

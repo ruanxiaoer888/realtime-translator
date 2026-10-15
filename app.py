@@ -62,7 +62,14 @@ ENGINE_MODES = {
 SETTINGS_FILE = os.path.join(ROOT, "settings.json")
 SETTINGS_KEYS = ("market", "category", "target", "model", "engine",
                  "interval", "font", "topmost", "clickthrough", "region",
-                 "chunk", "pause")
+                 "chunk", "pause", "ocr")
+
+# 屏幕识别引擎（界面显示名 -> screen_translate 的取值）
+OCR_MODES = {
+    "自动（推荐）": "auto",
+    "系统 OCR（快）": "win",
+    "本地模型（准）": "latin",
+}
 
 # 「回复助手」的常用回复。中文说法是**调过的** —— 有些中文读法会让引擎译歪，
 # 例如「支持七天无理由退换」会译成 "Apoie sete dias..."（把"支持"当"拥护"），
@@ -185,6 +192,8 @@ class App:
                 self.var_chunk.set(max(0.8, min(6.0, float(s["chunk"]))))
             if isinstance(s.get("pause"), (int, float)):
                 self.var_pause.set(max(0.25, min(1.5, float(s["pause"]))))
+            if s.get("ocr") in OCR_MODES.values():
+                self.var_ocr.set(s["ocr"])
             if isinstance(s.get("font"), int):
                 self.var_font.set(max(10, min(60, int(s["font"]))))
             if isinstance(s.get("topmost"), bool):
@@ -209,6 +218,7 @@ class App:
             "interval": float(self.var_interval.get()),
             "chunk": float(self.var_chunk.get()),
             "pause": float(self.var_pause.get()),
+            "ocr": self.var_ocr.get(),
             "font": int(self.var_font.get()),
             "topmost": bool(self.var_top.get()),
             "clickthrough": bool(self.var_clickthrough.get()),
@@ -241,6 +251,8 @@ class App:
 
         glossary = markets.get_glossary(self.var_category.get(), wl)
         asr_engine.set_terminology(prompt=prompt, glossary=glossary)
+        # 屏幕识别也按市场走：pt-BR 用葡语识别器、es-MX 用西语识别器
+        st.set_ocr_locale(locale)
         self.whisper_lang = wl
         self.src_locale = locale
         self.tgt_code = target
@@ -408,6 +420,12 @@ class App:
         ttk.Label(opt, text="刷新间隔(秒)").pack(side="left")
         self.var_interval = tk.DoubleVar(value=0.4)
         ttk.Spinbox(opt, from_=0.2, to=5.0, increment=0.1, width=5, textvariable=self.var_interval).pack(side="left", padx=(4, 14))
+        # 屏幕识别引擎：系统自带 OCR 实测约 10 毫秒/帧（本地模型约 1.3 秒），
+        # 但要先装对应语言包；没装就自动退回本地模型。
+        ttk.Label(opt, text="屏幕识别").pack(side="left")
+        self.var_ocr = tk.StringVar(value=OCR_MODES["自动（推荐）"])
+        ttk.Combobox(opt, textvariable=self.var_ocr, values=list(OCR_MODES.keys()),
+                     width=14, state="readonly").pack(side="left", padx=(4, 14))
         ttk.Label(opt, text="字号").pack(side="left")
         self.var_font = tk.IntVar(value=22)
         ttk.Spinbox(opt, from_=10, to=60, width=5, textvariable=self.var_font).pack(side="left", padx=(4, 14))
@@ -633,6 +651,7 @@ class App:
 
     def screen_loop(self):
         try:
+            st.set_ocr_engine(OCR_MODES.get(self.var_ocr.get(), "auto"))
             st.get_ocr()  # 预热
             self.ui_queue.put(("live_label", f"OCR 引擎已就绪：{st.ocr_engine_name()}"))
         except Exception as e:
