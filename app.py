@@ -228,7 +228,9 @@ class App:
         else:
             wl = market["whisper"]
             locale = market["locale"]
-            prompt = market["asr_prompt"]
+            # 按**当前品类**拼提示词，不要用市场级那一坨（四个品类的词混在一起，
+            # 卖五金时提示词里却带着 moto/carro/academia，会把识别带偏）
+            prompt = markets.get_asr_prompt(self.var_category.get(), wl)
 
         glossary = markets.get_glossary(self.var_category.get(), wl)
         asr_engine.set_terminology(prompt=prompt, glossary=glossary)

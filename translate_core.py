@@ -302,6 +302,26 @@ def presubstitute_terms(text: str, glossary: dict) -> str:
     return out
 
 
+def _looks_untranslated(out: str, dst: str) -> bool:
+    """判断译文是不是"根本没翻"。
+
+    真实踩到过：MyMemory 偶尔把整句葡语直接译成**英文**返回，例如
+        nova, soquete, sextavados, oitava, chaves, felipes e feias
+        -> new、socket、hex、octave、keys、felips和ugly
+    注意这句里夹了一个中文字「和」，所以不能简单用"有没有汉字"判断，要看比例。
+
+    判据（目标语言是中文时）：
+      · 一个汉字都没有，却有 ≥3 个英文单词   -> 没翻
+      · 汉字 ≤2 个，却有 ≥5 个英文单词       -> 没翻（上面那种夹一个的情况）
+    保留 "1350 RPM"、"42 Nm" 这类本来就该原样保留的片段（英文单词数不足）。
+    """
+    if not dst or not dst.lower().startswith("zh"):
+        return False
+    cjk = sum(1 for ch in out if "\u4e00" <= ch <= "\u9fff")
+    words = len(re.findall(r"[A-Za-z]{2,}", out))
+    return (cjk == 0 and words >= 3) or (cjk <= 2 and words >= 5)
+
+
 def _glossary_now() -> dict:
     """取当前生效的术语表（由界面按市场/品类注入）。"""
     try:
@@ -381,13 +401,13 @@ def translate(text: str, src: str = "auto", dst: str = "zh-CN", retries: int = 2
                     out = fn(text, src, dst)
                     if out:
                         out = apply_glossary(text, out.strip())
-                        if out:
+                        if out and not _looks_untranslated(out, dst):
                             _mark_channel(name, True)
                             with _lock:
                                 _cache[key] = out
                                 _dirty = True
                             return out
-                    _mark_channel(name, False)      # 有响应但没结果，同样算这个通道不行
+                    _mark_channel(name, False)      # 有响应但没结果/没真译，同样算这个通道不行
                 except Exception:
                     _mark_channel(name, False)
                     continue

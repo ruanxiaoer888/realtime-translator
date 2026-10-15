@@ -222,6 +222,35 @@ def get_glossary(category: str, whisper_lang: str) -> dict:
     return dict(cat.get(whisper_lang, {}))
 
 
+# 直播通用词：跟具体品类无关，主播天天说的那些。
+# 以前这些词混在 MARKETS[..]["asr_prompt"] 里，等于任何品类都带着其它品类的词。
+LIVE_PHRASES = {
+    "pt": ("frete grátis, cupom, promoção, desconto, carrinho amarelo, link na bio, "
+           "preço exclusivo, transmissão ao vivo, seguidores, curtidas, presente"),
+    "es": ("envío gratis, cupón, promoción, descuento, carrito amarillo, enlace en la bio, "
+           "precio exclusivo, transmisión en vivo, seguidores, me gusta, regalo"),
+    "en": ("free shipping, coupon, promotion, discount, yellow cart, link in bio, "
+           "exclusive price, live stream, followers, likes, gift"),
+}
+
+
+def get_asr_prompt(category: str, whisper_lang: str) -> str:
+    """拼某品类在某语种下的识别提示词（塞进 Whisper 的 initial_prompt）。
+
+    只用**当前品类**的术语 + 跟品类无关的直播通用词。
+
+    以前直接用市场级的 asr_prompt，那是四个品类的词全混在一起（427 字符）：
+    卖五金工具时提示词里却有 moto / carro / pneu / academia / camping / pesca。
+    Whisper 的 initial_prompt 会强烈带偏解码，混进无关品类词容易识别出主播
+    根本没说的词（实测直播字幕里出现过"山羊""大使馆""牛奶"这类凭空冒出来的词）。
+    """
+    terms = [t for t in get_glossary(category, whisper_lang) if t]
+    generic = LIVE_PHRASES.get(whisper_lang, "")
+    if generic:
+        terms.append(generic)
+    return ", ".join(terms)
+
+
 # 反向翻译专用别名：有些中文说法在目标语言里没有独立单词，正向术语表因此没有它，
 # 但做「中文 -> 外文」的回复时需要。只作用于回复助手方向，不影响正向识别与翻译。
 #   es：西语里"电动螺丝刀"和"电钻"都叫 taladro（正向表把 taladro 记作"电钻"）
