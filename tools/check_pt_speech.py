@@ -143,6 +143,27 @@ def pending_reboot() -> str:
     return "、".join(reasons)
 
 
+def staged_components(lang: str = "pt-br") -> dict[str, bool]:
+    """该语言的各个组件有没有下载到系统仓库（C:\\Windows\\servicing\\Packages）。
+
+    这一步很关键：组件"下载了但没生效"和"压根没下载"是两种完全不同的处置 ——
+    前者重启就好，后者要回设置里勾选。只看 C:\\Windows\\OCR 有没有文件分不清这两者。
+    """
+    import glob
+    base = r"C:\Windows\servicing\Packages"
+    kinds = (("语言包", "LanguageFeatures-Basic"),
+             ("OCR", "LanguageFeatures-OCR"),
+             ("语音识别", "LanguageFeatures-Speech"),
+             ("文本转语音", "LanguageFeatures-TextToSpeech"))
+    out: dict[str, bool] = {}
+    for label, pat in kinds:
+        try:
+            out[label] = bool(glob.glob(os.path.join(base, f"Microsoft-Windows-{pat}-{lang}-Package~*")))
+        except Exception:
+            out[label] = False
+    return out
+
+
 def main():
     print("=" * 66)
     print("系统语言组件检查（葡萄牙语 / 西班牙语）")
@@ -150,10 +171,13 @@ def main():
 
     langs = installed_languages()
     reboot = pending_reboot()
+    staged = staged_components("pt-br")
     print(f"\n已添加的语言: {', '.join(langs) if langs else '（读不到）'}")
+    print("组件是否已下载到系统仓库: " +
+          "，".join(f"{k}{'✓' if v else '✗'}" for k, v in staged.items()))
     if reboot:
         print(f"⚠ 系统有待重启项: {reboot}")
-        print("  —— 语言包装好后，OCR / 语音的模型文件往往要重启才落盘。")
+        print("  —— 组件下载后会先暂存在 WinSxS，真正生效要等重启把它们链接到系统目录。")
         print("     设置页显示「已安装」只是功能已登记，引擎文件可能还没到位。")
 
     sr = check_speech_recognizers()
@@ -189,10 +213,18 @@ def main():
         print("\n  已就绪。实时字幕：Win+Ctrl+L → 右上角齿轮 → 把语言改成对应语言。")
         print("  想换成系统 OCR 提速（约 0.1 秒/次），告诉我一声改 screen_translate.py 即可。")
     elif added and reboot:
-        print("\n  语言已经添加、组件也装过了，但**还没生效 —— 请重启一次电脑**。")
-        print(f"  依据：系统有待重启项（{reboot}），而这些模型文件要重启后才落盘。")
-        print("  重启后再跑一次本脚本，就能看到 pt 变成「已就绪」。")
-        print("  （设置页此时已经显示「已安装」是正常的 —— 那只是功能登记，引擎文件还没到位。）")
+        if staged.get("OCR") or staged.get("语音识别"):
+            print("\n  语言已添加、组件也**已经下载**了，但还没生效 —— **请重启一次电脑**。")
+            print("  依据：")
+            print(f"    · 组件已下载到系统仓库: " +
+                  "，".join(f"{k}{'✓' if v else '✗'}" for k, v in staged.items()))
+            print(f"    · 系统有待重启项: {reboot}")
+            print("  组件下载后先暂存在 WinSxS，重启才会链接到系统目录（如 C:\\Windows\\OCR\\pt-br）。")
+            print("  重启后再跑一次本脚本，就能看到 pt 变成「已就绪」。")
+        else:
+            print("\n  语言已添加、系统也挂着待重启，但**没找到 OCR / 语音组件的下载记录**。")
+            print("  建议：设置 → 时间和语言 → 语言和区域 → 葡萄牙语(巴西) → ⋯ → 语言选项，")
+            print("        确认「语言包」和「增强的语音识别」都已安装，然后重启。")
     elif added and not reboot:
         print("\n  语言已添加、也没有待重启项，但引擎仍没就绪 —— 可能 OCR / 语音组件没勾选。")
         print("  设置 → 时间和语言 → 语言和区域 → 葡萄牙语(巴西) → ⋯ → 语言选项")
