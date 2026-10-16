@@ -174,6 +174,7 @@ class App:
         self.overlay_pos = None            # (x, y)，None = 用默认落点
         self.screen_running = False
         self.screen_thread = None
+        self._screen_gen = 0            # 每次「开始」+1；点了停止就让旧轮次作废
         self.last_text = ""
         self.subs: list[tuple[float, str, str, float]] = []   # (时间, 原文, 中文, 音频时长)
         self.t0 = time.time()
@@ -467,6 +468,11 @@ class App:
         ttk.Button(bar, text="② 开始", command=self.start_screen).pack(side="left", padx=4)
         ttk.Button(bar, text="停止", command=self.stop_screen).pack(side="left")
 
+        # 屏幕翻译自己的状态行。原来屏幕这边的提示（OCR 就绪 / 抓屏失败 / 翻译失败）
+        # 全写在直播页签的 lbl_live 上，用户停在屏幕页签时一个都看不到。
+        self.lbl_screen = ttk.Label(f1, text="未开始", foreground="#ffd166")
+        self.lbl_screen.pack(anchor="w", padx=10, pady=(2, 0))
+
         ttk.Label(
             f1,
             text="框一次，之后这块区域里的文字会持续自动翻成中文，不用反复截图。"
@@ -478,11 +484,18 @@ class App:
         opt.pack(fill="x", padx=10, pady=4)
         ttk.Label(opt, text="刷新间隔(秒)").pack(side="left")
         self.var_interval = tk.DoubleVar(value=0.4)
+        # 这两个值允许"边跑边调"。工作线程不能直接读 Tk 变量（会崩），所以由主线程
+        # 通过 trace 把最新值同步到普通属性上，工作线程只读属性 —— 既保留实时可调，
+        # 又不会跨线程碰 Tk。
+        self._interval_hint = 0.4
+        self.var_interval.trace_add("write", self._on_interval_change)
         ttk.Spinbox(opt, from_=0.2, to=5.0, increment=0.1, width=5, textvariable=self.var_interval).pack(side="left", padx=(4, 14))
         # 屏幕识别引擎：系统自带 OCR 实测约 14 毫秒/帧（本地模型约 1.3 秒），
         # 但要先装对应语言包；没装就自动退回本地模型。
         ttk.Label(opt, text="屏幕识别").pack(side="left")
         self.var_ocr = tk.StringVar(value=OCR_MODES["自动（推荐）"])
+        self._ocr_hint = OCR_MODES["自动（推荐）"]
+        self.var_ocr.trace_add("write", self._on_ocr_change)
         ttk.Combobox(opt, textvariable=self.var_ocr, values=list(OCR_MODES.keys()),
                      width=14, state="readonly").pack(side="left", padx=(4, 14))
         ttk.Label(opt, text="字号").pack(side="left")
@@ -787,45 +800,104 @@ class App:
         self.root.deiconify()
         self.lbl_live.config(text="已取消框选（区域未变）", foreground="#ffd166")
 
+    # ---- 「刷新间隔 / 屏幕识别」边跑边调：主线程写普通属性，工作线程只读属性 ----
+    def _on_interval_change(self, *_a):
+        try:
+            self._interval_hint = max(0.2, min(5.0, float(self.var_interval.get())))
+        except Exception:
+            pass
+
+    def _on_ocr_change(self, *_a):
+        try:
+            self._ocr_hint = OCR_MODES.get(self.var_ocr.get(), "auto")
+        except Exception:
+            pass
+
     def start_screen(self):
         if self.screen_running:
+            self.lbl_screen.config(text="屏幕翻译已经在跑了（要重开先点「停止」）",
+                                   foreground="#ffd166")
             return
         if not self.region:
             messagebox.showinfo("提示", "请先点「① 框选区域」选择要翻译的屏幕范围")
             return
         self.screen_running = True
+        self._screen_gen += 1          # 本轮编号：点了停止之后，旧轮次一律作废
         self.last_text = ""
         self.show_overlay()
-        self.screen_thread = threading.Thread(target=self.screen_loop, daemon=True)
+        # 参数必须在**主线程**取快照再交给工作线程：工作线程直接读 Tk 变量不安全，
+        # 实测会抛 "RuntimeError: main thread is not in main loop"，线程当场死掉、
+        # 界面却还停在"识别中…" —— 用户看到的就是"点了停止没反应"。
+        self.screen_thread = threading.Thread(
+            target=self.screen_loop,
+            args=(self._screen_gen, OCR_MODES.get(self.var_ocr.get(), "auto"),
+                  max(0.2, float(self.var_interval.get()))),
+            daemon=True)
         self.screen_thread.start()
+        self.lbl_screen.config(text="屏幕翻译已启动", foreground="#7ee787")
         self.set_overlay("识别中…")
 
-    def stop_screen(self):
-        self.screen_running = False
-        self.set_overlay("已停止")
-
-    def screen_loop(self):
+    def _screen_status(self, text: str, color: str = "#ffd166"):
+        """屏幕翻译的状态提示（只写屏幕页签自己的标签）。"""
         try:
-            st.set_ocr_engine(OCR_MODES.get(self.var_ocr.get(), "auto"))
+            self.lbl_screen.config(text=text, foreground=color)
+        except Exception:
+            pass
+
+    def stop_screen(self):
+        """停止屏幕翻译。三件事缺一不可（原来只做了第一件，所以看着"没反应"）：
+
+        1) 置标志位；
+        2) **让在途那一轮作废** —— 否则它会把 OCR + 翻译跑完，再把新译文推到悬浮窗，
+           把"已停止"盖掉（实测：点停止 2.1 秒后悬浮窗变成了新译文）；
+        3) 立刻给界面一个明确反馈。
+        """
+        alive = self.screen_thread is not None and self.screen_thread.is_alive()
+        if not self.screen_running and not alive:
+            self.lbl_screen.config(text="当前没有在跑屏幕翻译", foreground="#ffd166")
+            return
+        self.screen_running = False
+        self._screen_gen += 1
+        self.set_overlay("已停止")
+        self.lbl_screen.config(text="屏幕翻译已停止", foreground="#8f93a8")
+
+    def _screen_alive(self, gen: int) -> bool:
+        """这一轮屏幕翻译还该不该继续（点了停止 / 又开了新一轮 -> False）。"""
+        return self.screen_running and self._screen_gen == gen
+
+    def screen_loop(self, gen: int, ocr_pref: str, interval: float):
+        try:
+            st.set_ocr_engine(ocr_pref)
             st.get_ocr()  # 预热
-            self.ui_queue.put(("live_label", f"OCR 引擎已就绪：{st.ocr_engine_name()}"))
+            if not self._screen_alive(gen):
+                return
+            self.ui_queue.put(("screen_label",
+                               f"OCR 引擎已就绪：{st.ocr_engine_name()}", "#7ee787"))
         except Exception as e:
-            self.ui_queue.put(("error", f"OCR 初始化失败: {e}"))
+            self.ui_queue.put(("screen_label", f"OCR 初始化失败: {e}", "#ff6b6b"))
             self.screen_running = False
             return
         last_sig = ()
         last_ocr_at = 0.0
-        while self.screen_running:
+        while self._screen_alive(gen):
             t0 = time.time()
             region = self.region
-            interval = max(0.2, float(self.var_interval.get()))
+            # 刷新间隔 / 屏幕识别引擎支持边跑边调：读主线程维护的普通属性，
+            # 不读 Tk 变量（跨线程读 Tk 会崩，见 start_screen 的注释）。
+            interval = getattr(self, "_interval_hint", interval)
+            hint = getattr(self, "_ocr_hint", ocr_pref)
+            if hint != ocr_pref:
+                ocr_pref = hint
+                st.set_ocr_engine(ocr_pref)
             try:
                 rgb = st.grab(region)
                 sig = st.frame_signature(rgb)
             except Exception as e:
-                self.ui_queue.put(("error", f"抓屏失败: {e}"))
+                self.ui_queue.put(("screen_label", f"抓屏失败: {e}", "#ff6b6b"))
                 time.sleep(1.0)
                 continue
+            if not self._screen_alive(gen):
+                return
             # 画面没变就不做识别，省掉 1-2 秒的 OCR；
             # 但最多静默 3 秒必须识别一次，免得指纹漏掉的变化一直不翻。
             changed = st.signature_changed(sig, last_sig)
@@ -838,16 +910,22 @@ class App:
                 items = st.recognize(rgb)
                 text = st.merge_lines(items)
             except Exception as e:
-                self.ui_queue.put(("error", f"识别失败: {e}"))
+                self.ui_queue.put(("screen_label", f"识别失败: {e}", "#ff6b6b"))
                 time.sleep(1.0)
                 continue
+            # 识别完才发现已经点了停止 -> 连翻译都不做（翻译最坏能白等几十秒）
+            if not self._screen_alive(gen):
+                return
             if text and self._changed(text):
                 self.last_text = text
                 zh = self._tr(text)
+                # 翻译完再查一次：不回推，就不会把"已停止"盖掉
+                if not self._screen_alive(gen):
+                    return
                 if zh:
                     self.ui_queue.put(("screen", text, zh))
                 else:
-                    self._tr_fail()
+                    self.ui_queue.put(("screen_label", self.TR_FAIL_HINT, "#ff6b6b"))
             time.sleep(max(0.0, interval - (time.time() - t0)))
 
     @staticmethod
@@ -868,7 +946,26 @@ class App:
     # ---------------- 直播同传 ----------------
     def start_live(self):
         if self.live_running:
+            self.lbl_live.config(text="已经在听译了（要重开先点「停止」）", foreground="#ffd166")
             return
+        if self.live_thread is not None and self.live_thread.is_alive():
+            # 上一场还在收尾。这里**必须**拦住：live_loop 会覆盖 _caption_q / t0 /
+            # _srt_path，两场同时跑的话旧的回环流会把音频塞进新队列，字幕和时间轴全乱。
+            self.lbl_live.config(text="上一场还在收尾（1~3 秒），稍等一下再点「开始听译」",
+                                 foreground="#ffd166")
+            return
+        # 参数在**主线程**取快照再交给工作线程（原因见 start_screen：工作线程直接读
+        # Tk 变量会抛 "main thread is not in main loop"，线程当场死掉、界面却还停在
+        # "正在加载…"，用户看到的就是"点了停止没反应"）。
+        snap = {
+            "size": self.var_model.get(),
+            "engine": self.var_engine.get(),
+            "chunk": float(self.var_chunk.get()),
+            "pause": float(self.var_pause.get()),
+            "market": self.var_market.get(),
+            "category": self.var_category.get(),
+            "lang": self.whisper_lang,
+        }
         self.live_running = True
         self.t0 = time.time()
         with self._subs_lock:
@@ -878,18 +975,31 @@ class App:
         self._srt_path = os.path.join(
             LOG_DIR, time.strftime("直播字幕-%Y%m%d-%H%M%S.srt"))
         self.show_overlay()
-        self.lbl_live.config(text="正在启动…")
-        self.live_thread = threading.Thread(target=self.live_loop, daemon=True)
+        self.lbl_live.config(text="正在启动…", foreground="#ffd166")
+        self.live_thread = threading.Thread(target=self.live_loop, args=(snap,), daemon=True)
         self.live_thread.start()
 
     def stop_live(self):
-        self.live_running = False
+        """停止听译：**立刻**给界面反馈。
 
-    def live_loop(self):
+        原来这里只有一行 `self.live_running = False`，界面一个字都不变，而悬浮窗
+        还会再冒出新字幕（队列里剩的 + 收尾那半句），用户当然认为"点了没反应"。
+        """
+        if not self.live_running:
+            running = self.live_thread is not None and self.live_thread.is_alive()
+            self.lbl_live.config(text="正在停止中…" if running else "当前没有在听译",
+                                 foreground="#ffd166")
+            return
+        self.live_running = False
+        self.lbl_live.config(text="正在停止…（队列里剩下的直接丢弃）", foreground="#ffd166")
+        self.set_overlay("正在停止…")
+
+    def live_loop(self, snap: dict):
         """直播同传主循环：VAD 切句 -> CT2 识别 -> 翻译 -> 悬浮窗。"""
         import live_caption as lc
         import asr_engine
-        size = self.var_model.get()
+        size = snap["size"]
+        reason = "已停止听译"
         try:
             self.ui_queue.put(("live_label", f"正在加载识别模型 {size} …"))
             if not asr_engine.model_available(size):
@@ -920,8 +1030,8 @@ class App:
         # 2026-10 上 GPU 后实测实时率从 1.28x（过载）降到 0.41x，有 2.4 倍余量，
         # 所以把硬切上限收到 4.5 秒：字幕早 1.5 秒出来，实时率升到约 0.6x 仍然安全。
         # 界面「每句最短(秒)」依旧能调：1.5 -> 上限 4.5s，2.0 -> 6.0s，3.0 -> 9.0s。
-        chunk = float(self.var_chunk.get())
-        pause = float(self.var_pause.get())
+        chunk = snap["chunk"]
+        pause = snap["pause"]
         seg = asr_engine.StreamingSegmenter(
             max_seconds=max(4.5, chunk * 3.0),
             min_seconds=chunk,
@@ -930,12 +1040,12 @@ class App:
         )
         # 识别 + 翻译丢到后台线程：主循环只管录制和切段，永远不被识别卡住。
         # 队列只留 2 条，满了丢最旧的 —— 直播场景里"追上实时"比"一句不落"重要。
-        self._open_live_log()
+        self._open_live_log(snap)
         self._live_log("开始听译：模型=%s 引擎=%s 每句最短=%.1fs 断句静音=%.1fs"
-                       % (size, self.var_engine.get(), chunk, pause))
+                       % (size, snap["engine"], chunk, pause))
         self._caption_q = queue.Queue(maxsize=2)
         self._caption_worker = threading.Thread(
-            target=self.caption_worker, args=(asr_engine, size), daemon=True)
+            target=self.caption_worker, args=(asr_engine, snap), daemon=True)
         self._caption_worker.start()
 
         while self.live_running:
@@ -947,6 +1057,7 @@ class App:
             if err is not None:
                 self.ui_queue.put(("error", f"录音失败（系统声音回环不可用）：{err}"))
                 self._live_log("录音失败：%r" % (err,))
+                reason = "录音失败，已停止"
                 self.live_running = False
                 break
             if data.size == 0:
@@ -969,17 +1080,16 @@ class App:
             pass
         self.recorder = None
 
-        # 收尾：把缓冲里没说完的半句也处理掉，然后等后台线程把队列跑完
-        try:
-            tail = seg.flush()
-            if tail is not None:
-                self._submit_caption(tail)
-        except Exception:
-            pass
+        # 立刻把终态推给界面。原来要等后台线程把队列跑完（最多 90 秒）才收尾，
+        # 而界面全程停在"运行中…"，用户只能靠"字幕不动了"猜 —— 这就是"点了没反应"。
+        self.ui_queue.put(("live_stopped", reason))
+        self._live_log("停止听译")
+        # 收尾：**不再**处理缓冲里那半句。点「停止」的语义就是"立刻停"，
+        # 处理它会让悬浮窗在点完之后又冒出新字幕（实测点了停止还继续出 4 条），
+        # 那正是用户报的"停不下来"。想要最后半句，就别在它说完之前点停止。
         worker = self._caption_worker
         if worker is not None:
-            worker.join(timeout=90)
-        self._live_log("停止听译")
+            worker.join(timeout=10)
         # 本场字幕单独留档，再复制一份「最新」出来（记录\直播字幕.srt）
         try:
             if self._srt_path and os.path.exists(self._srt_path):
@@ -995,7 +1105,7 @@ class App:
             pass
         self._live_log_fp = None
 
-    def _open_live_log(self):
+    def _open_live_log(self, snap: dict):
         """开始听译时开一个带表头的日志，出问题时有据可查。
 
         之前没有这个日志，直播间延迟大到 132 秒都只能靠猜。
@@ -1014,9 +1124,9 @@ class App:
             dev = asr_engine.device_info()
             self._live_log("=" * 72)
             self._live_log("开始 %s ｜ 市场=%s 品类=%s 模型=%s 引擎=%s ｜ 算力=%s/%s"
-                           % (time.strftime("%Y-%m-%d %H:%M:%S"), self.var_market.get(),
-                              self.var_category.get(), self.var_model.get(),
-                              self.var_engine.get(), dev.get("device", "?"),
+                           % (time.strftime("%Y-%m-%d %H:%M:%S"), snap["market"],
+                              snap["category"], snap["size"],
+                              snap["engine"], dev.get("device", "?"),
                               dev.get("compute_type", "")))
         except Exception:
             self._live_log_fp = None
@@ -1052,13 +1162,14 @@ class App:
             except queue.Full:
                 pass
 
-    def caption_worker(self, asr_engine, size):
+    def caption_worker(self, asr_engine, snap: dict):
         """后台线程：从队列取音频 -> 识别 -> 翻译 -> 写字幕。"""
         while True:
             q = self._caption_q
             if q is None:
                 break
-            if not self.live_running and q.empty():
+            # 点了停止就不再取新的活儿（正在解的那一条也会在推送前被丢掉）
+            if not self.live_running:
                 break
             try:
                 item = q.get(timeout=0.3)
@@ -1068,11 +1179,11 @@ class App:
                 break
             t_enq, piece, audio_sec, qsize = item
             try:
-                self._emit_caption(asr_engine, piece, size, t_enq, audio_sec, qsize)
+                self._emit_caption(asr_engine, piece, snap, t_enq, audio_sec, qsize)
             except Exception as e:
                 self._live_log("处理异常：%r" % (e,))
 
-    def _emit_caption(self, asr_engine, piece, size, t_enq=None, audio_sec=None, qsize=0):
+    def _emit_caption(self, asr_engine, piece, snap: dict, t_enq=None, audio_sec=None, qsize=0):
         """识别 + 翻译一段音频并推给界面（只被 caption_worker 调用）。"""
         if piece is None or piece.size < 16000 * 0.5:
             return
@@ -1082,7 +1193,7 @@ class App:
             audio_sec = piece.size / 16000
         wait = time.time() - t_enq                    # 排队等待：>1.5s 说明识别跟不上
         try:
-            pt, asr_dt = asr_engine.transcribe(piece, language=self.whisper_lang, size=size)
+            pt, asr_dt = asr_engine.transcribe(piece, language=snap["lang"], size=snap["size"])
         except Exception as e:
             self.ui_queue.put(("error", f"识别失败: {e}"))
             self._live_log("识别失败 队列等待%.1fs | %r" % (wait, e))
@@ -1099,6 +1210,11 @@ class App:
             self._tr_fail()
             self._live_log("翻译失败 识别%.2fs 翻译%.2fs 队列等待%.1fs | %s"
                            % (asr_dt, tr_dt, wait, pt[:60]))
+            return
+        # 点了停止：这一条不再推到界面（否则"已停止"之后悬浮窗还会冒新字幕）
+        if not self.live_running:
+            self._live_log("已停止，丢弃结果 识别%.2fs 翻译%.2fs | %r"
+                           % (asr_dt, tr_dt, pt[:40]))
             return
         # 时间轴取「这段音频说完的时刻」，不是「识别+翻译完的时刻」。
         # 原来用 time.time()，字幕会整体后移一整个识别+翻译的耗时
@@ -1191,6 +1307,13 @@ class App:
                         foreground="#7ee787" if total < 2.0 else "#ffd166")
                 elif kind == "live_label":
                     self.lbl_live.config(text=msg[1], foreground="#ffd166")
+                elif kind == "live_stopped":
+                    # 听译线程的终态。以前线程结束了界面还停在"运行中…"，
+                    # 用户只能靠"字幕不动了"猜 —— 这就是"点了停止没反应"。
+                    self.lbl_live.config(text=msg[1], foreground="#8f93a8")
+                    self.set_overlay("已停止")
+                elif kind == "screen_label":
+                    self._screen_status(msg[1], msg[2] if len(msg) > 2 else "#ffd166")
                 elif kind == "reply":
                     _, out, err = msg
                     if err:

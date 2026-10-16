@@ -290,10 +290,19 @@ def grab(region):
     return img[:, :, [2, 1, 0]].copy()
 
 
+_engine_call_lock = threading.Lock()
+
+
 def recognize(rgb) -> list[tuple[str, float]]:
-    """对图像做 OCR，返回 [(文本, 置信度), ...]，按从上到下、从左到右排序。"""
+    """对图像做 OCR，返回 [(文本, 置信度), ...]，按从上到下、从左到右排序。
+
+    引擎调用要加锁：RapidOCR 的引擎对象**不是线程安全的**。点「停止」之后马上
+    再点「开始」时，上一轮可能正好卡在 OCR 里，两个线程同时调同一个引擎会在
+    原生库层面出问题（崩进程，不是抛 Python 异常）。
+    """
     engine = get_ocr(_ocr_pref)
-    result, _ = engine(rgb)
+    with _engine_call_lock:
+        result, _ = engine(rgb)
     if not result:
         return []
     items = []
