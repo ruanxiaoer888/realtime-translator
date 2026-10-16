@@ -50,6 +50,8 @@ _model = None
 _model_size = None
 _model_lock = threading.Lock()
 _device_info: dict = {"size": None, "device": None, "compute_type": None}
+# CUDA 跑不跑得起来：None=还没试过，True=试过能用，False=试过不行（以后一律走 CPU，不再重试）
+_cuda_usable: bool | None = None
 
 
 def model_available(size: str) -> bool:
@@ -58,17 +60,68 @@ def model_available(size: str) -> bool:
 
 
 def cuda_available() -> bool:
-    """有没有能用的 NVIDIA CUDA（没装 CUDA 运行库的机器会返回 False）。"""
+    """有没有**能真正用起来**的 NVIDIA CUDA。
+
+    注意：这里回答的是「现在该不该用 GPU」，不是「机器上有没有 N 卡」。
+    有的机器（实测某台公司电脑）装了显卡驱动、ctranslate2.get_cuda_device_count()
+    返回 1，但缺 cuBLAS/cuDNN，一直到真正识别那一刻才报
+    `Library cublas64_12.dll is not found or cannot be loaded`。
+    所以一旦试过失败就记下来，后面全部老老实实走 CPU。
+    """
+    global _cuda_usable
+    if _cuda_usable is False:
+        return False
     try:
         import ctranslate2
-        return ctranslate2.get_cuda_device_count() > 0
+        ok = ctranslate2.get_cuda_device_count() > 0
+        if not ok:
+            _cuda_usable = False
+        return ok
     except Exception:
+        _cuda_usable = False
         return False
+
+
+def cuda_failed_reason() -> str:
+    """GPU 试过但不可用时的原始报错（给界面/自检显示用）。"""
+    return _device_info.get("cuda_error") or ""
 
 
 def device_info() -> dict:
     """当前模型跑在什么设备上（给界面显示用）。"""
     return dict(_device_info)
+
+
+def _load(path: str, dev: str, ct: str):
+    """加载模型，并把 glibc 的 dlopen 错误翻译成人话。"""
+    from faster_whisper import WhisperModel
+    try:
+        return WhisperModel(path, device=dev, compute_type=ct)
+    except OSError as e:
+        msg = str(e)
+        if ("cublas" in msg.lower() or "cudnn" in msg.lower()
+                or "cuda" in msg.lower()):
+            raise RuntimeError(
+                "GPU 加载失败（缺 CUDA 运行库）——会自动改用 CPU。"
+                f"原始报错：{msg}"
+            ) from e
+        raise
+
+
+def _fallback_to_cpu(size: str, err: Exception):
+    """GPU 用不了：换 CPU 重载模型，并把原因记进 device_info。
+
+    只在"已经加载过 GPU 模型"之后才可能被调用（首次用 GPU 时已经在
+    get_model 的候选顺序里试过 CPU 了）。
+    """
+    global _model, _cuda_usable, _model_size
+    with _model_lock:
+        _cuda_usable = False
+        _device_info["cuda_error"] = str(err)[:300]
+        path = os.path.join(MODEL_ROOT, f"ct2-{size}")
+        _model = _load(path, "cpu", "int8")
+        _device_info.update(size=size, device="cpu", compute_type="int8")
+        _model_size = size
 
 
 def get_model(size: str = "small", device: str = "auto", compute_type: str = ""):
@@ -77,12 +130,15 @@ def get_model(size: str = "small", device: str = "auto", compute_type: str = "")
     device="auto"：有 CUDA 就用 GPU（float16），否则直接走 CPU（int8）。
     实测没有独显也够用：small 模型 CPU int8 实时率约 0.10x，
     即 3 秒音频约 0.32 秒识别完，直播同传完全跟得上。
+
+    注意：GPU 有两个层次会失败 —— 加载时（缺 cudnn 之类）和推理时
+    （缺 cublas64_12.dll，加载不报错、一识别就崩）。前者在这里按候选顺序
+    回退，后者见 transcribe() 里的 _fallback_to_cpu。
     """
-    global _model, _model_size
+    global _model, _model_size, _cuda_usable
     with _model_lock:
         if _model is not None and _model_size == size:
             return _model
-        from faster_whisper import WhisperModel
         path = os.path.join(MODEL_ROOT, f"ct2-{size}")
         if not model_available(size):
             raise FileNotFoundError(
@@ -100,29 +156,30 @@ def get_model(size: str = "small", device: str = "auto", compute_type: str = "")
         last_err = None
         for dev, ct in order:
             try:
-                _model = WhisperModel(path, device=dev, compute_type=ct)
+                _model = _load(path, dev, ct)
+                # GPU 有个隐蔽的坑：加载不报错，缺 cublas64_12.dll 之类要等到真正
+                # 编码那一刻才炸（某台公司电脑实测）。所以这里用 0.3 秒空白音频
+                # 真跑一次，当场验明正身；验不过就换 CPU，别等用户第一次听译才崩。
+                if dev == "cuda":
+                    _warmup_ok(_model)
+                    _device_info.pop("cuda_error", None)   # GPU 真能用，清掉历史告警
                 _device_info.update(size=size, device=dev, compute_type=ct)
                 break
             except Exception as e:      # 缺 CUDA 运行库 / 显存不够 -> 换下一个
                 last_err = e
                 _model = None
+                if dev == "cuda":
+                    # 把结论钉死：这台机器以后一律走 CPU，别再试、别在界面上
+                    # 显示"CUDA 可用"（显示成可用但实际用不了最误导人）。
+                    _cuda_usable = False
+                    _device_info["cuda_error"] = f"GPU 试跑失败，已降级 CPU：{str(e)[:240]}"
         if _model is None:
             raise RuntimeError(f"模型加载失败：{last_err}")
         _model_size = size
         return _model
 
 
-def transcribe(audio: np.ndarray, language: str = "pt", size: str = "small",
-               use_prompt: bool = True, beam_size: int = 1) -> tuple[str, float]:
-    """识别一段音频，返回 (文本, 识别耗时秒)。language 由市场配置决定。"""
-    model = get_model(size)
-    audio = np.asarray(audio, dtype=np.float32)
-    if audio.size < SAMPLE_RATE * 0.3:
-        return "", 0.0
-    peak = float(np.abs(audio).max())
-    if peak > 0:
-        audio = audio / max(peak, 0.05) * 0.9
-    t0 = time.time()
+def _run(model, audio, language, beam_size, use_prompt):
     segments, _info = model.transcribe(
         audio,
         language=language or None,
@@ -139,7 +196,47 @@ def transcribe(audio: np.ndarray, language: str = "pt", size: str = "small",
         initial_prompt=(_asr_prompt or None) if use_prompt else None,
         no_speech_threshold=0.6,
     )
-    text = " ".join(s.text.strip() for s in segments).strip()
+    return " ".join(s.text.strip() for s in segments).strip()
+
+
+def _warmup_ok(model):
+    """用 0.3 秒静音真跑一次编码，验证 GPU 运行库是否真的齐全。
+
+    VOICE 之外的坑：ctranslate2 加载 CUDA 模型时不校验 cublas/cudnn，
+    真正的 dlopen 发生在第一次 encode。所以必须真跑，不能只看设备数。
+    """
+    audio = np.zeros(int(SAMPLE_RATE * 0.3), dtype=np.float32)
+    segments, _info = model.transcribe(audio, language=None, beam_size=1,
+                                       vad_filter=False, condition_on_previous_text=False)
+    list(segments)          # 生成器要消费掉，否则编码根本没发生
+    return True
+
+
+def transcribe(audio: np.ndarray, language: str = "pt", size: str = "small",
+               use_prompt: bool = True, beam_size: int = 1) -> tuple[str, float]:
+    """识别一段音频，返回 (文本, 识别耗时秒)。language 由市场配置决定。
+
+    GPU 在**推理时**才暴露的问题（典型：缺 cublas64_12.dll）在这里兜住：
+    自动换回 CPU 重跑一次，而不是让整个听译线程挂掉。
+    """
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.size < SAMPLE_RATE * 0.3:
+        return "", 0.0
+    model = get_model(size)
+    peak = float(np.abs(audio).max())
+    if peak > 0:
+        audio = audio / max(peak, 0.05) * 0.9
+    t0 = time.time()
+    try:
+        text = _run(model, audio, language, beam_size, use_prompt)
+    except (RuntimeError, OSError) as e:
+        msg = str(e).lower()
+        if _device_info.get("device") == "cuda" and (
+                "cublas" in msg or "cudnn" in msg or "cuda" in msg):
+            _fallback_to_cpu(size, e)
+            text = _run(_model, audio, language, beam_size, use_prompt)
+        else:
+            raise
     return text, time.time() - t0
 
 

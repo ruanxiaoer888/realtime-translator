@@ -24,6 +24,12 @@
   · 勾了 Add to PATH，但当前窗口没重开    → 敲 python 说找不到命令
   · 撞上 Microsoft Store 的假 python.exe  → 敲 python 会弹应用商店
 
+**还有一个 2026-10 实测到的大坑：新电脑已经装了 Python 3.14。**
+3.14 代替不了 3.12 —— libs\ 里的组件是 cp312 编译的，跑起来会报
+"Error importing numpy: you should not try to import numpy from its source directory"
+这类看不懂的错，看着像文件没拷全，其实是版本不对。
+两个版本可以并存：装上 3.12，以后一律用 `py -3.12` 跑本工具。
+
 开一个**新的** PowerShell，跑这两条：
 
   python -c "import sys; print(sys.version); print(sys.executable); print('64-bit OK' if sys.maxsize>2**32 else '32-bit BAD!')"
@@ -34,13 +40,35 @@
 
   · 第 1 条弹应用商店 / 找不到命令
       → PATH 没生效：**重开一个 PowerShell 窗口**再试；还不行就是安装时没勾
-  · 版本不是 3.12
-      → 装包里的  安装Python\python-3.12.9-amd64.exe
+  · 版本不是 3.12（3.13 / 3.14 也一样）
+      → 装包里的   tmp\python-3.12.9-amd64.exe
         （官方原版，已核对数字签名；安装时**务必勾 "Add python.exe to PATH"**）
+        安装包也可能在  安装Python\  目录下，两个位置都找一下
   · 第 2 条失败
-      → 不影响使用。启动脚本会优先找 py -3.12，找不到自动退到 python
+      → 不影响使用。启动脚本会自己找 3.12（注册表 / 常见安装目录都查）
 
 懒得查也行：直接做第 2 步，`check_deploy.py` 会自己查版本并报错。
+
+
+────────────────────────────────────────────────────
+ 第 0.5 步：装 VC++ 运行库（全新电脑必做，要管理员）
+────────────────────────────────────────────────────
+
+这一步很多新电脑会漏，症状很迷惑：Python 装对了，但自检报
+
+  [FAIL] libs 依赖完整性: 缺 4 个: ctranslate2, faster_whisper, onnxruntime, rapidocr_onnxruntime
+  [FAIL] OCR 引擎: ImportError: DLL load failed while importing onnxruntime_pybind11_state
+
+文件其实都在，是 Windows 里没有 MSVC 运行库（System32 下没有 msvcp140.dll）。
+修法：装微软官方运行库（约 25 MB，会弹 UAC 要点"是"）
+
+  https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+装完可以自己验证这 5 个文件都在：
+
+  "msvcp140","msvcp140_1","msvcp140_2","vcruntime140","vcruntime140_1" |
+    ForEach-Object { "$_ : " + (Test-Path "C:\Windows\System32\$_.dll") }
+
 
 
 ────────────────────────────────────────────────────
@@ -58,12 +86,14 @@
 ────────────────────────────────────────────────────
 
   cd D:\TikTokBR-Translator
-  python check_deploy.py
+  py -3.12 check_deploy.py
 
-会逐项检查 10 项：
+会逐项检查 11 项：
 
-  Python 版本 · libs 依赖完整性 · 模型文件 · OCR 引擎 · 算力（识别速度）
+  Python 版本 · VC++ 运行库 · libs 依赖完整性 · 模型文件 · OCR 引擎 · 算力（识别速度）
   屏幕捕获 · 系统声音回环 · 回环实际录音 · 翻译通道（要联网）· 记录目录可写
+
+（本机要是装了多个 Python，**一定用 `py -3.12`**，别用裸 `python`。）
 
 **看到这一行就成了：**
 

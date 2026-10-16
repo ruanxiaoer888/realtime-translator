@@ -67,6 +67,22 @@ def c_libs():
     return True, f"{len(need)} 个核心依赖齐全（numpy 来自 {where}）"
 
 
+def c_msvc_runtime():
+    """Windows 的 VC++ 运行库（msvcp140/vcruntime140）。
+
+    换到全新电脑最容易漏的一环：ctranslate2 / onnxruntime 都是 MSVC 编译的，
+    系统里没有这个运行库时，Python 能起来、numpy 也能用（numpy 自带一份），
+    但 ctranslate2/onnxruntime 会报 DLL load failed，看起来像"依赖没拷全"。
+    """
+    import glob
+    sysdir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    need = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
+    missing = [n for n in need if not os.path.exists(os.path.join(sysdir, n))]
+    if missing:
+        return False, "缺 " + ", ".join(missing)
+    return True, "msvcp140 / vcruntime140 都在"
+
+
 def c_models():
     import asr_engine
     import nllb_translate
@@ -84,7 +100,12 @@ def c_ocr():
 
 
 def c_compute():
-    """算力：GPU 还是 CPU，实测一句的耗时。"""
+    """算力：GPU 还是 CPU，实测一句的耗时。
+
+    注意会真跑一次编码：有的机器有 N 卡驱动、ctranslate2 也报告有 CUDA 设备，
+    但缺 cublas/cudnn，只有真编码那一刻才暴露。asr_engine 会当场验明并退到 CPU，
+    这里把退的原因也显示出来，免得用户以为是"程序坏了"。
+    """
     import asr_engine
     if not asr_engine.model_available("small"):
         return False, "没有 small 模型，无法测"
@@ -99,8 +120,13 @@ def c_compute():
     asr_engine.transcribe(audio, language="pt", size="small")
     dt = time.time() - t0
     cuda = asr_engine.cuda_available()
+    note = ""
+    reason = asr_engine.cuda_failed_reason() if hasattr(asr_engine, "cuda_failed_reason") else ""
+    if reason:
+        reason = reason.replace("GPU 试跑失败，已降级 CPU：", "")
+        note = f"  ⚠ 检测到 N 卡但 CUDA 跑不起来，已自动改用 CPU（{reason[:60]}）"
     return True, (f"{info.get('device')}/{info.get('compute_type')}（CUDA可用={cuda}）"
-                  f"  加载 {load:.1f}s  3秒音频 {dt:.2f}s")
+                  f"  加载 {load:.1f}s  3秒音频 {dt:.2f}s{note}")
 
 
 def c_screen():
@@ -152,6 +178,9 @@ def main():
 
     check("Python 版本", c_python,
           "装 64 位 Python 3.12：https://www.python.org/downloads/release/python-3129/")
+    check("VC++ 运行库", c_msvc_runtime,
+          "装微软官方运行库（否则 ctranslate2/onnxruntime 会 DLL load failed）："
+          "https://aka.ms/vs/17/release/vc_redist.x64.exe")
     check("libs 依赖完整性", c_libs, "在本目录运行: python fetch_wheels.py --core")
     check("模型文件", c_models, "运行: python fetch_model.py small  和  python fetch_ocr_model.py")
     check("OCR 引擎", c_ocr, "运行: python fetch_ocr_model.py")

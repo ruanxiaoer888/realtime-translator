@@ -314,12 +314,16 @@ MyMemory  跑一段时间后 -> HTTP 429 "YOU USED ALL AVAILABLE FREE TRANSLATIO
 
 | 现象 | 处理 |
 |---|---|
-| 双击 bat 一闪而过 | 右键 `start.ps1` → 使用 PowerShell 运行，会停在窗口里显示报错 |
-| 提示 Python 版本不对 | 装 64 位 Python 3.12（`libs/` 是 cp312 编译的） |
-| 提示找不到 numpy | 依赖没装：`python fetch_wheels.py --core` |
-| 听译没反应 | 确认电脑扬声器在响（回环录的是扬声器输出）；`python check_deploy.py` 看回环那项 |
+| 双击 bat 一闪而过 | 右键 `start.ps1` → 使用 PowerShell 运行，会停在窗口里显示报错。启动脚本现在还会把 app.py 的输出存到 `tmp\startup_log.txt`、错误存到 `tmp\startup_err.txt`，秒退时它会自动在前台重跑一次把真实报错打在屏幕上 |
+| 改过 `start.ps1` 后启动就没反应了 | 这个文件**必须保持纯 ASCII**：Windows PowerShell 5.1 会把 UTF-8 中文按 GBK 解析，导致解析错乱（实测后果是变量变空、启动静默失败）。中文提示写在 `app.py` / `check_deploy.py` 里，别写进 `start.ps1` |
+| 提示 Python 版本不对 | 装 64 位 Python 3.12（`libs/` 是 cp312 编译的）。本机已有 3.13/3.14 不用卸，共存即可，跑本工具用 `py -3.12` |
+| 自检报 `Error importing numpy ... source directory` | 那是**用错 Python 版本**了（3.14 加载 cp312 的 numpy），不是文件没拷全。改用 `py -3.12 check_deploy.py` |
+| 自检报 `DLL load failed` / `Could not find module ctranslate2.dll` | 新电脑缺微软 VC++ 运行库：装 <https://aka.ms/vs/17/release/vc_redist.x64.exe>（需管理员），细节见 `部署到另一台电脑.md` 第零节 |
+| 自检显示「检测到 N 卡但 CUDA 跑不起来，已自动改用 CPU」 | 正常，不用管。有显卡驱动但缺 cublas/cuDNN 时程序会自动降级到 CPU，速度也够直播同传 |
+| 提示找不到 numpy | 依赖没装：`py -3.12 fetch_wheels.py --core` |
+| 听译没反应 | 确认电脑扬声器在响（回环录的是扬声器输出）；`py -3.12 check_deploy.py` 看回环那项 |
 | 屏幕翻译不更新 | 先确认已点「开始」；重新框一次区域（框太大或太偏会识别不到） |
-| 换电脑怎么弄 | 见 `部署到另一台电脑.md`，先跑 `python check_deploy.py` |
+| 换电脑怎么弄 | 见 `部署到另一台电脑.md`，先跑 `py -3.12 check_deploy.py` |
 | 翻译偶尔空一下 | 免费接口偶尔限流，程序会自动换通道重试 |
 
 ## 已知限制
