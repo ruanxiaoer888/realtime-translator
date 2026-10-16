@@ -152,7 +152,10 @@ CATEGORIES = {
             "últimas unidades": "最后几件", "unidades disponíveis": "现货",
             "finaliza a compra": "下单", "leva o kit para casa": "把套装带回家",
             "preço de barbada": "白菜价", "carrinho amarelo": "黄色购物车",
-            "frete": "运费", "cupom": "优惠券",
+            "frete": "运费",
+            # 注：cupom 归 LIVE_GLOSSARY（市场层）。这里别再登记 ——
+            # get_glossary() 是「市场层先、品类层后 update」，品类层同名会覆盖市场层，
+            # 重复登记会让市场层的译法悄悄失效（实测踩过）。
             # 注：TERM_FIXES 的键必须同时出现在术语表里才会触发修正，
             # 所以下面这几个"动作词"也要登记（现场被译成"将刺/会刺"）。
             "furar": "钻孔", "furando": "在钻孔",
@@ -289,15 +292,22 @@ LIVE_GLOSSARY = {
         "correios": "巴西邮政", "devolução": "退货",
         "pronta entrega": "现货秒发", "sob encomenda": "预售",
         "últimas unidades": "最后几件", "unidades disponíveis": "现货",
-        # —— 营销与逼单 ——
-        "queima de estoque": "清仓", "cupom": "优惠券",
-        "metade do preço": "半价", "só hoje": "仅限今天",
-        "brindes": "赠品", "mimos": "小福利", "oferta relâmpago": "限时秒杀",
-        "golpe": "骗局", "garantia": "保修", "não perca": "别错过",
-        "tchau": "再见", "vale a pena": "值得买",
+        # —— 营销与逼单（译法按"带货味"走：中文直播间的说法，不是书面语）——
+        "queima de estoque": "清仓大甩卖", "cupom": "优惠券/羊毛券",
+        "metade do preço": "半价", "só hoje": "仅限今天/破价一天",
+        "brindes": "赠品", "mimos": "宠粉福利", "oferta relâmpago": "限时秒杀",
+        "golpe": "骗局/割韭菜", "garantia": "保修", "não perca": "别错过",
+        "tchau": "再见", "vale a pena": "值得买/绝对值/性价比高",
         # —— 评论区情绪（用来判断弹幕风向）——
-        "falso": "假货", "réplica": "仿品", "calote": "赖账",
-        "caloteiro": "骗子", "reclame aqui": "投诉平台",
+        # ⚠️ 这里用中文网络热语，**多选项用"/"分隔是故意的**，因为：
+        #   · LLM 通道（System Prompt）会按上下文挑一个合适的 —— 多选项是优点；
+        #   · 但 replace 式术语修正会把整串**原样插进字幕**（"杀猪盘/骗子店/老赖"），
+        #     所以这几条**不要**再加 TERM_FIXES 规则，除非改成单一译法。
+        "falso": "假货/一眼假", "réplica": "仿品",
+        "calote": "杀猪盘/骗子店/老赖", "caloteiro": "骗子店/老赖",
+        "reclame aqui": "投诉维权网（等同 315 曝光）",
+        "decepcionado": "踩雷了/拔草了/避坑", "decepção": "踩雷/翻车",
+        "perfeito": "太神了/闭眼入/绝绝子", "maravilhoso": "太神了/闭眼入/绝绝子",
         # —— 流量与互动 ——
         "for you": "推荐页", "para você": "推荐页", "flopou": "没流量",
         "viralizou": "爆了", "seguidor": "粉丝", "seguidores": "粉丝",
