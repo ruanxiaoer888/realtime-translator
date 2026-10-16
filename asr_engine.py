@@ -21,6 +21,46 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "libs"))
 sys.path.insert(0, ROOT)
 
+# ---------------------------------------------------------------------------
+# GPU 支持：把 libs\nvidia\*\bin 注册进 DLL 搜索路径
+# ---------------------------------------------------------------------------
+# ctranslate2 的 CUDA 版不是链接期依赖 cublas/cudnn，而是**运行时才 dlopen**，
+# 所以要显式告诉 Windows 去哪找：
+#   Library cublas64_12.dll is not found or cannot be loaded
+# 就是没找到时的报错（2026-10 公司电脑 GTX 1650 实测，见部署文档第十节）。
+# NVIDIA 的 pip 包把 dll 放在 libs\nvidia\<包名>\bin\ 下。没装这些包时，
+# 本函数什么都不做，程序照常走 CPU —— 这条路径必须永远安全。
+_CUDA_DLL_DIRS: list[str] = []
+
+
+def _register_cuda_dlls() -> list[str]:
+    """把 libs/nvidia/*/bin 加进 DLL 搜索路径；返回实际注册的目录。"""
+    added = []
+    base = os.path.join(ROOT, "libs", "nvidia")
+    if not os.path.isdir(base):
+        return added
+    for pkg in sorted(os.listdir(base)):
+        d = os.path.join(base, pkg, "bin")
+        if not os.path.isdir(d):
+            continue
+        try:
+            os.add_dll_directory(d)
+            added.append(d)
+        except Exception:
+            pass
+        # 依赖链里有一部分是走 PATH 兜底解析的，两条路都铺上更稳
+        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+    return added
+
+
+_CUDA_DLL_DIRS = _register_cuda_dlls()
+
+
+def cuda_dll_dirs() -> list[str]:
+    """已注册的 NVIDIA 运行库目录（给自检/界面显示用）。"""
+    return list(_CUDA_DLL_DIRS)
+
+
 import numpy as np  # noqa: E402
 
 SAMPLE_RATE = 16000
@@ -146,12 +186,19 @@ def get_model(size: str = "small", device: str = "auto", compute_type: str = "")
             )
 
         if device == "auto":
-            order = [("cuda", "float16"), ("cpu", "int8")] if cuda_available() \
-                else [("cpu", "int8")]
+            # GPU 上 int8_float16 比 float16 快得多，别用 float16 打头。
+            # 2026-10 GTX 1650 实测（6 秒音频，含真实编码）：
+            #   cpu  int8         3.109s
+            #   cuda float16      1.321s
+            #   cuda int8_float16 0.433s   <- 快 3 倍
+            # 原因：GTX 1650(TU117) 没有张量核心，fp16 并不快，int8 才是它的强项。
+            # 显存也够：small 约 0.4GB、medium 约 1.1GB（4GB 卡上还剩余量）。
+            order = [("cuda", "int8_float16"), ("cuda", "float16"), ("cpu", "int8")] \
+                if cuda_available() else [("cpu", "int8")]
         elif device == "cpu":
             order = [("cpu", compute_type or "int8")]
         else:
-            order = [(device, compute_type or "float16"), ("cpu", "int8")]
+            order = [(device, compute_type or "int8_float16"), ("cpu", "int8")]
 
         last_err = None
         for dev, ct in order:
@@ -195,6 +242,18 @@ def _run(model, audio, language, beam_size, use_prompt):
         condition_on_previous_text=False,
         initial_prompt=(_asr_prompt or None) if use_prompt else None,
         no_speech_threshold=0.6,
+        # 解码回退阶梯必须限制，否则会出现 10~60 秒的识别尖峰。
+        # 2026-10 真实直播日志实测：识别中位 4.6s，但出现 11.1s / 13.8s / 47.8s / 62.7s
+        # 四次尖峰，合计占该场识别总耗时的 25%。
+        # 原因：faster-whisper 默认 temperature=[0,0.2,0.4,0.6,0.8,1.0]，而
+        # generate_with_fallback 里 temperature>0 的每一档都会用
+        # num_hypotheses=best_of（默认 5）生成 5 个候选 —— 一次完整的回退
+        # 等于 1 + 5×5 = 26 次解码。
+        # 直播场景里，晚 5 秒的"更准一句话"没有价值，所以：
+        #   best_of=1        -> 每个温度档只解 1 次
+        #   temperature 收到 3 档 -> 最坏 3 次解码，尖峰封顶
+        best_of=1,
+        temperature=[0.0, 0.2, 0.4],
     )
     return " ".join(s.text.strip() for s in segments).strip()
 

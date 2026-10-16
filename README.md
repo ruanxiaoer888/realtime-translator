@@ -87,7 +87,7 @@ Built for people who sell in Latin America but can't read Portuguese or Spanish.
 
 - **Windows 10 / 11（64 位）** —— 用了 WASAPI 回环录音，其他系统不支持
 - **Python 3.12（64 位）** —— 必须正好 3.12，因为 `libs/` 里是 cp312 编译的二进制组件
-- 可选：NVIDIA 显卡（有则自动用 GPU，没有也能跑，见[实测数据](#实测数据)）
+- 可选：NVIDIA 显卡（有则自动用 GPU；**CUDA 运行库已随 `libs/nvidia/` 打包，不用另装**。没有 N 卡也能跑，见[实测数据](#实测数据)）
 
 ### 安装
 
@@ -150,9 +150,9 @@ CATEGORIES = {
 
 全部在本机（RTX 3060 Ti）真实跑过，脚本都在 `tools\` 里可以复现。
 
-### 识别速度 —— 没有独显也够用
+### 识别速度
 
-16.8 秒西语语音：
+16.8 秒西语语音（家里那台，RTX 3060 Ti）：
 
 | 模型 | 算力 | 识别耗时 | 实时率 | 每 3 秒音频 |
 |---|---|---|---|---|
@@ -161,8 +161,22 @@ CATEGORIES = {
 | medium | GPU float16 | 0.49 s | 0.029x | 0.09 s |
 | medium | CPU int8 | 5.19 s | 0.308x | 0.88 s |
 
-**结论：纯 CPU 跑 `small`，一句字幕 0.32 秒，加上翻译约 0.9 秒** —— 直播同传完全跟得上。
-程序会自动判断：有 CUDA 用 GPU，没有就干净地走 CPU。
+> ⚠️ **上表的 CPU 数据是那一台机器的，不要当成通用结论。**
+> 换到公司电脑（另一颗 CPU + GTX 1650）用**真实直播**实测，纯 CPU 跑 small 完全跟不上：
+> 识别中位 4.61 s、最高 **47.8 s**，**实时率 1.28x（比主播说话还慢）**，一场 8 分钟丢掉 **27 句**。
+> 补上 CUDA 运行库、改用 GPU + medium 之后：识别中位 **2.11 s**、最高 **2.44 s**、
+> **实时率 0.41x、0 句丢弃**。
+>
+> 判断"跟不跟得上"要看**实时率**，不能只看单句耗时 —— 因为
+> **每次识别的成本与音频长度无关**（Whisper 每次都固定编码一个 30 秒窗口），
+> 1.4 秒的短句和 6 秒的长句一样贵。
+>
+> GTX 1650（TU117，**没有张量核心**）上 `int8_float16` 比 `float16` 快 3 倍
+> （6 秒音频 0.433 s vs 1.321 s）；medium 在 GPU 上 1.154 s，**比 small 在 CPU 上还快 2.7 倍**。
+> 安装方法、显存占用、撤销方式见 `部署到另一台电脑.md` 第四节。
+
+**程序会自动判断**：有 CUDA 运行库就用 GPU，没有就干净地走 CPU
+（CUDA 运行库已随 `libs\nvidia\` 打包，不需要另装）。
 
 ### 端到端延迟
 
@@ -319,7 +333,8 @@ MyMemory  跑一段时间后 -> HTTP 429 "YOU USED ALL AVAILABLE FREE TRANSLATIO
 | 提示 Python 版本不对 | 装 64 位 Python 3.12（`libs/` 是 cp312 编译的）。本机已有 3.13/3.14 不用卸，共存即可，跑本工具用 `py -3.12` |
 | 自检报 `Error importing numpy ... source directory` | 那是**用错 Python 版本**了（3.14 加载 cp312 的 numpy），不是文件没拷全。改用 `py -3.12 check_deploy.py` |
 | 自检报 `DLL load failed` / `Could not find module ctranslate2.dll` | 新电脑缺微软 VC++ 运行库：装 <https://aka.ms/vs/17/release/vc_redist.x64.exe>（需管理员），细节见 `部署到另一台电脑.md` 第零节 |
-| 自检显示「检测到 N 卡但 CUDA 跑不起来，已自动改用 CPU」 | 正常，不用管。有显卡驱动但缺 cublas/cuDNN 时程序会自动降级到 CPU，速度也够直播同传 |
+| 自检显示「检测到 N 卡但 CUDA 跑不起来，已自动改用 CPU」 | 说明 `libs\nvidia\` 不在（缺 cuBLAS/cuDNN）。程序会安全降级到 CPU，但**实测 CPU 跑不动**（实时率 1.28x，一场丢 27 句）。装法见 `部署到另一台电脑.md` 第四节 |
+| 听译字幕越拖越慢 / 会掉句 | 打开 `记录\运行日志.txt`（听译时自动写，每句一行）：看 `队列等待` 和「丢弃最旧的一句」。队列等待持续变大 = 识别跟不上，该上 GPU 了 |
 | 提示找不到 numpy | 依赖没装：`py -3.12 fetch_wheels.py --core` |
 | 听译没反应 | 确认电脑扬声器在响（回环录的是扬声器输出）；`py -3.12 check_deploy.py` 看回环那项 |
 | 屏幕翻译不更新 | 先确认已点「开始」；重新框一次区域（框太大或太偏会识别不到） |

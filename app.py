@@ -43,7 +43,7 @@ except ImportError:
         "如果 libs 在但确实缺包，在本目录运行：python fetch_wheels.py --core"
     )
 
-from translate_core import translate, close as close_cache  # noqa: E402
+from translate_core import translate, close as close_cache, fix_source  # noqa: E402
 import screen_translate as st  # noqa: E402
 import markets  # noqa: E402
 
@@ -156,6 +156,13 @@ class App:
         self.recorder = None
         self.live_running = False
         self.live_thread = None
+        # 识别 + 翻译放到后台线程，录制循环不再被阻塞。
+        # 2026-10 真实直播实测：单线程时每句积压 3 秒以上（识别固定耗时），
+        # 而且只增不减 —— 8 分钟一场下来延迟累积到 100 秒以上。
+        self._caption_q = None
+        self._caption_worker = None
+        self._subs_lock = threading.Lock()
+        self._live_log_fp = None
 
         self._build_ui()
         # 当前语言配置（由市场决定；换市场就重算）
@@ -827,7 +834,8 @@ class App:
             return
         self.live_running = True
         self.t0 = time.time()
-        self.subs = []
+        with self._subs_lock:
+            self.subs = []
         self.show_overlay()
         self.lbl_live.config(text="正在启动…")
         self.live_thread = threading.Thread(target=self.live_loop, daemon=True)
@@ -866,15 +874,29 @@ class App:
         # 结果不管主播有没有说完，每 3 秒就被强切一刀，0.35 秒的换气也算"这句完了" ——
         # 真实字幕里大量"半句话"（"…a sua frente, tá?"、"de matos, oito chaves"），
         # 每条又被单独送去翻译，没有上下文，中文自然读不通。
-        # 现在：最长 6 秒，断句静音默认 0.6 秒（不切 0.4 秒的换气），能等到完整句。
+        # 之后改成最长 6 秒，句子完整了但出字幕偏慢。
+        #
+        # 2026-10 上 GPU 后实测实时率从 1.28x（过载）降到 0.41x，有 2.4 倍余量，
+        # 所以把硬切上限收到 4.5 秒：字幕早 1.5 秒出来，实时率升到约 0.6x 仍然安全。
+        # 界面「每句最短(秒)」依旧能调：1.5 -> 上限 4.5s，2.0 -> 6.0s，3.0 -> 9.0s。
         chunk = float(self.var_chunk.get())
         pause = float(self.var_pause.get())
         seg = asr_engine.StreamingSegmenter(
-            max_seconds=max(6.0, chunk * 3.0),
+            max_seconds=max(4.5, chunk * 3.0),
             min_seconds=chunk,
             silence_seconds=pause,
             overlap_seconds=0.25,
         )
+        # 识别 + 翻译丢到后台线程：主循环只管录制和切段，永远不被识别卡住。
+        # 队列只留 2 条，满了丢最旧的 —— 直播场景里"追上实时"比"一句不落"重要。
+        self._open_live_log()
+        self._live_log("开始听译：模型=%s 引擎=%s 每句最短=%.1fs 断句静音=%.1fs"
+                       % (size, self.var_engine.get(), chunk, pause))
+        self._caption_q = queue.Queue(maxsize=2)
+        self._caption_worker = threading.Thread(
+            target=self.caption_worker, args=(asr_engine, size), daemon=True)
+        self._caption_worker.start()
+
         while self.live_running:
             time.sleep(0.12)
             data = rec.take()
@@ -886,36 +908,138 @@ class App:
             # 纯静音段直接丢掉，不去打扰识别和翻译
             if seg.speech_level(piece) < seg.silence_rms:
                 continue
-            self._emit_caption(asr_engine, seg.trim(piece), size)
+            self._submit_caption(seg.trim(piece))
 
-        # 收尾：把缓冲里没说完的半句也处理掉
+        # 收尾：把缓冲里没说完的半句也处理掉，然后等后台线程把队列跑完
         try:
             tail = seg.flush()
             if tail is not None:
-                self._emit_caption(asr_engine, tail, size)
+                self._submit_caption(tail)
+        except Exception:
+            pass
+        worker = self._caption_worker
+        if worker is not None:
+            worker.join(timeout=90)
+        self._live_log("停止听译")
+        try:
+            if self._live_log_fp:
+                self._live_log_fp.close()
+        except Exception:
+            pass
+        self._live_log_fp = None
+
+    def _open_live_log(self):
+        """开始听译时开一个带表头的日志，出问题时有据可查。
+
+        之前没有这个日志，直播间延迟大到 132 秒都只能靠猜。
+        """
+        try:
+            if self._live_log_fp:
+                self._live_log_fp.close()
+        except Exception:
+            pass
+        self._live_log_fp = None
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            self._live_log_fp = open(os.path.join(LOG_DIR, "运行日志.txt"),
+                                     "a", encoding="utf-8")
+            import asr_engine
+            dev = asr_engine.device_info()
+            self._live_log("=" * 72)
+            self._live_log("开始 %s ｜ 市场=%s 品类=%s 模型=%s 引擎=%s ｜ 算力=%s/%s"
+                           % (time.strftime("%Y-%m-%d %H:%M:%S"), self.var_market.get(),
+                              self.var_category.get(), self.var_model.get(),
+                              self.var_engine.get(), dev.get("device", "?"),
+                              dev.get("compute_type", "")))
+        except Exception:
+            self._live_log_fp = None
+
+    def _live_log(self, msg: str):
+        fp = self._live_log_fp
+        if fp is None:
+            return
+        try:
+            fp.write("%s  %s\n" % (time.strftime("%H:%M:%S"), msg))
+            fp.flush()
         except Exception:
             pass
 
-    def _emit_caption(self, asr_engine, piece, size):
-        """识别 + 翻译一段音频并推给界面。"""
+    def _submit_caption(self, piece):
+        """把一段音频交给后台线程；队列满了丢最旧的一条。"""
         if piece is None or piece.size < 16000 * 0.5:
             return
+        q = self._caption_q
+        if q is None:
+            return
+        item = (time.time(), piece, piece.size / 16000, q.qsize())
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            try:
+                q.get_nowait()
+                self._live_log("队列已满，丢弃最旧的一句（识别跟不上）")
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(item)
+            except queue.Full:
+                pass
+
+    def caption_worker(self, asr_engine, size):
+        """后台线程：从队列取音频 -> 识别 -> 翻译 -> 写字幕。"""
+        while True:
+            q = self._caption_q
+            if q is None:
+                break
+            if not self.live_running and q.empty():
+                break
+            try:
+                item = q.get(timeout=0.3)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            t_enq, piece, audio_sec, qsize = item
+            try:
+                self._emit_caption(asr_engine, piece, size, t_enq, audio_sec, qsize)
+            except Exception as e:
+                self._live_log("处理异常：%r" % (e,))
+
+    def _emit_caption(self, asr_engine, piece, size, t_enq=None, audio_sec=None, qsize=0):
+        """识别 + 翻译一段音频并推给界面（只被 caption_worker 调用）。"""
+        if piece is None or piece.size < 16000 * 0.5:
+            return
+        if t_enq is None:
+            t_enq = time.time()
+        if audio_sec is None:
+            audio_sec = piece.size / 16000
+        wait = time.time() - t_enq                    # 排队等待：>1.5s 说明识别跟不上
         try:
             pt, asr_dt = asr_engine.transcribe(piece, language=self.whisper_lang, size=size)
         except Exception as e:
             self.ui_queue.put(("error", f"识别失败: {e}"))
+            self._live_log("识别失败 队列等待%.1fs | %r" % (wait, e))
             return
+        pt = fix_source(pt)          # 先把 Whisper 听错的葡语词改回来，再翻译
         if not self._is_meaningful(pt):
+            self._live_log("丢弃(无意义) 识别%.2fs 队列等待%.1fs 队列%d | %r"
+                           % (asr_dt, wait, qsize, pt[:40]))
             return
         t1 = time.time()
         zh = self._tr(pt)
         tr_dt = time.time() - t1
         if not zh:
             self._tr_fail()
+            self._live_log("翻译失败 识别%.2fs 翻译%.2fs 队列等待%.1fs | %s"
+                           % (asr_dt, tr_dt, wait, pt[:60]))
             return
         tick = time.time() - self.t0
-        self.subs.append((tick, pt, zh, piece.size / 16000))
-        self.ui_queue.put(("live", pt, zh, asr_dt, tr_dt, piece.size / 16000))
+        with self._subs_lock:
+            self.subs.append((tick, pt, zh, audio_sec))
+            n = len(self.subs)
+        self.ui_queue.put(("live", pt, zh, asr_dt, tr_dt, audio_sec))
+        self._live_log("#%-3d 队列等待%.1fs 识别%.2fs 翻译%.2fs 音频%.1fs 队列%d"
+                       % (n, wait, asr_dt, tr_dt, audio_sec, qsize))
         self.save_srt()
 
     @staticmethod
@@ -937,14 +1061,16 @@ class App:
         widget.see("end")
 
     def save_srt(self):
-        if not self.subs:
+        with self._subs_lock:
+            subs = list(self.subs)
+        if not subs:
             return
         path = os.path.join(LOG_DIR, "直播字幕.srt")
         with open(path, "w", encoding="utf-8") as f:
-            for i, (tick, pt, zh, audio_dur) in enumerate(self.subs, 1):
+            for i, (tick, pt, zh, audio_dur) in enumerate(subs, 1):
                 # 结束时间 = 下一句开始时间（若已到末尾则按句长+1秒）
-                if i < len(self.subs):
-                    end = self.subs[i][0]
+                if i < len(subs):
+                    end = subs[i][0]
                 else:
                     end = tick + max(1.5, audio_dur)
                 if end <= tick:

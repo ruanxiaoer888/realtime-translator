@@ -296,9 +296,11 @@ def _try_nllb(text: str, src: str, dst: str):
 # 术语修正规则：左边是"常见错译"，右边是标准说法。
 # 触发条件：当前术语表里有这个原文词。模型/接口把哪个词译错就改哪个，语言无关。
 TERM_FIXES = {
-    "parafusadeira": [("螺旋", "螺栓"), ("螺丝刀", "起子"), ("保险丝", "螺丝钉")],
+    "parafusadeira": [("螺丝钻", "螺旋", "螺栓"), ("螺丝刀", "起子"), ("保险丝", "螺丝钉")],
     "chave de fenda": [("裂钥匙", "螺丝刀")],
-    "furadeira": [("钻机", "钻孔机", "演习", "保险丝")],
+    # "钻头"也列进来：furadeira 常被译成"钻头"，而"钻头"本是 broca 的译文。
+    # 保护逻辑改成"只保护原文出现过的词"之后，两者同现时不会误伤（见 apply_glossary）。
+    "furadeira": [("钻床", "钻机", "钻孔机", "钻头", "演习", "保险丝")],
     "jogo de chaves": [("钥匙",)],
     "jogo de soquetes": [("插座", "游戏")],
     "soquete": [("插座", "socket")],
@@ -321,7 +323,7 @@ TERM_FIXES = {
     "ponteira": [("尖端", "提示")],
     "porca": [("猪",)],
     "arruela": [("洗衣机",)],
-    "nível": [("等级", "级别", "水平仪")],
+    "nível": [("等级", "级别", "水平仪", "水平")],
     "estilete": [("触控笔", "刻度", "雕刻刀")],
     "esmerilhadeira": [("磨床", "打磨机", "研磨机", "磨光机")],
     "chave inglesa": [("钥匙英文", "英文钥匙", "钥匙")],
@@ -349,7 +351,61 @@ TERM_FIXES = {
     "screwdriver": [("起子",)],
     "toolbox": [("手提箱", "行李箱")],
     "free shipping": [("免邮费", "免运费")],
+    # ---- 2026-10 真实直播（记录\直播字幕.srt）回放补的 ----
+    # 那 37 条现场字幕里，有 18 条在补这些规则之前是**修不掉**的。
+    # 都是现场原样出现的错译，不是猜的：
+    "furar": [("将刺", "会刺", "刺痛")],                  # vai furar -> 将刺
+    "furando": [("将钻", "会钻")],
+    "preço de barbada": [("巴巴多斯价格", "巴巴多斯", "倒钩价格", "倒钩")],
+    "três oitavos": [("八度三分之一", "三个八度", "八度")],
+    "bora": [("博拉",)],                                  # 音译成了"博拉"
+    "galera": [("加莱拉",)],                              # 音译成了"加莱拉"
+    # 第二场真实直播（medium + GPU）回放补的：模型听对了，是在线接口直译得怪
+    "pessoal": [("个人",)],                               # pessoal -> 个人（应为"各位"）
+    "top demais": [("顶太多", "顶部太多")],                # top demais -> 顶太多
+    "luz": [("轻",)],                                     # luz（灯）-> 轻（重量轻）
+    "aproveita e leva": [("享受和携带", "享受并携带")],
+    # 注：aproveita -> "享受" 这条实测**不能**替换。加了之后
+    # "带套件回家的人正在享受" 变成 "正在抓紧"，反而更别扭。术语表里保留
+    # "aproveita": "抓紧" 只为喂识别提示词，不做强制替换。
+    # 只针对固定搭配 "aproveita e leva" 做替换，就不会误伤上面那种句子。
 }
+
+
+# ============================================================
+# ASR 常见误听修正（2026-10 真实直播实测）
+# ============================================================
+# 这些是 Whisper **听错**的词，术语表救不了 —— 原文里根本没有正确的词，
+# apply_glossary 匹配不上。只能在送去翻译之前，先把葡语原文修回来。
+# 一行一个：左边 = 听错的，右边 = 正确的。长的写在前面，避免短词先命中。
+PT_ASR_FIXES = (
+    ("assado de 3, oitavo", "três oitavos"),      # 3/8 英寸夹头
+    ("10 milhutes", "10 milímetros"),
+    ("milhutes", "milímetros"),
+    ("uma aves", "uma vez"),
+    ("malzinha", "maleta"),                       # 工具箱
+    ("fuzadeira", "furadeira"),
+    ("fideira", "furadeira"),
+    ("recargadas", "recarregáveis"),
+    ("brox", "brocas"),                           # 钻头
+    ("blocas", "brocas"),                         # 第二场实测：seis blocas -> seis brocas
+    ("mandrilho", "mandril"),
+)
+
+
+def fix_source(text: str) -> str:
+    """修正 ASR 对葡语的常见误听，返回修正后的原文。
+
+    只做原文层面的替换：改完之后既送去翻译，也写进 srt —— 这样字幕里的
+    葡语原文和中文译文同时变干净。
+    """
+    if not text:
+        return text
+    out = text
+    for wrong, right in PT_ASR_FIXES:
+        if wrong in out:
+            out = out.replace(wrong, right)
+    return out
 
 
 # 保护标记：替换期间把已经正确的片段临时换成一个不会出现在译文里的占位符。
@@ -454,18 +510,25 @@ def apply_glossary(text_src: str, text_zh: str | None) -> str | None:
     if not glossary:
         return out
 
-    # 1) 收集"当前术语表里的全部正确说法"—— 每次替换前都拿它做保护。
-    #    只保护**当前术语表**的译文：修正只会把词改成这些译文，
-    #    保护了它们，正确说法就不会被误伤；也不会像"保护所有语种的译文"
-    #    那样把待修的错译一起保护掉。
+    # 1) 收集"当前术语表里的正确说法"—— 每次替换前都拿它做保护。
+    #    只保护**原文里真的出现过的那些词**的译文（2026-10 实测踩到的坑）：
+    #    原文说 furadeira（电钻），接口译成"钻头"，而术语表里 broca 的译文正是
+    #    "钻头"。原来把整张术语表的译文都设为保护，等于把"钻头"护住，
+    #    furadeira 的修正永远不生效 —— 真实字幕里 9 处 furadeira 一处都没修对，
+    #    同一场里 martelete 也被"锤子"（martelo 的译文）压住修不动。
+    #    改成按"原文出现过的词"来保护后，这类的互相压住就分开了；
+    #    broca 和 furadeira 真的同时出现在原文里时，"钻头"照样受保护。
     #
     #    但要排除"某个待修错译的子串"——真实踩到过：
     #    新加术语 parafuso -> 螺丝 之后，"螺丝"进了保护集，而"螺丝刀"正是
     #    要被修成"电动螺丝刀"的错译，保护了"螺丝"就等于把"螺丝刀"整个护住了，
     #    所有螺丝刀相关的修正全部静默失效（verify_p0 两条 FAIL）。
-    all_wrongs = {w for term in glossary for grp in TERM_FIXES.get(term, ()) for w in grp}
-    protect = {v for v in glossary.values()
-               if v and not any(v != w and v in w for w in all_wrongs)}
+    present = [t for t in glossary if t and t.lower() in low]
+    all_wrongs = {w for term in present
+                  for grp in TERM_FIXES.get(term, ()) for w in grp}
+    protect = {glossary[t] for t in present
+               if glossary[t] and not any(glossary[t] != w and glossary[t] in w
+                                          for w in all_wrongs)}
 
     # 2) 修错译。注意 protect 要传进去、每次替换前重新保护一遍 ——
     #    上一条规则刚生成的正确说法，否则会被下一条规则当成错译再改一次。

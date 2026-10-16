@@ -142,6 +142,26 @@ CATEGORIES = {
             "bivolt": "双电压", "voltagem": "电压",
             "espelho": "镜子", "quadro": "画框", "móveis": "家具",
             "montar": "组装", "desmontar": "拆卸",
+            # 巴西直播口语（2026-10 拿真实直播回放补的）：
+            # 这些词以前被音译成"博拉/加莱拉"或者根本不翻，译文读不懂。
+            # 补进术语表有两个作用：1) 拼进识别提示词，模型更容易听对；
+            # 2) 触发 TERM_FIXES 修掉在线接口的错译。
+            "bora": "来吧", "galera": "大家", "pessoal": "各位",
+            "oferta": "优惠", "promoção": "促销", "desconto": "折扣",
+            "aproveita": "抓紧", "oportunidade": "机会",
+            "últimas unidades": "最后几件", "unidades disponíveis": "现货",
+            "finaliza a compra": "下单", "leva o kit para casa": "把套装带回家",
+            "preço de barbada": "白菜价", "carrinho amarelo": "黄色购物车",
+            "frete": "运费", "cupom": "优惠券",
+            # 注：TERM_FIXES 的键必须同时出现在术语表里才会触发修正，
+            # 所以下面这几个"动作词"也要登记（现场被译成"将刺/会刺"）。
+            "furar": "钻孔", "furando": "在钻孔",
+            "parafusar": "拧螺丝", "montar": "组装", "desmontar": "拆卸",
+            "três oitavos": "3/8 英寸",
+            # 2026-10 第二场真实直播（medium 模型）回放补的：这些口语词
+            # 模型已经听得对了，但在线接口逐字直译，中文读着别扭。
+            "top demais": "太棒了", "luz": "灯",
+            "aproveita e leva": "抓紧下单带走",
         },
         "es": {
             "taladro": "电钻", "destornillador": "螺丝刀",
