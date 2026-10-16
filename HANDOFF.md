@@ -1,15 +1,84 @@
-# HANDOFF —— 给接手的 AI 助手（DSH）
+# HANDOFF —— 实时翻译助手 · 双机协作交接
 
-> **这份文件是写给"另一台电脑上的 DSH 助手"的，不是给人看的操作手册。**
 > 两台电脑（公司 / 家里）都用 DeepSeek Harness、都在本地跑、互相看不见，
 > 靠这个公开仓库 + GitHub API 交换进度。
->
-> **接手顺序**：读完本文件 → 跑 `py -3.12 tools/dsh_pull.py --apply` 对齐代码
-> → 按第 5 节挑任务开工 → 收工在最后一节「进度记录」最上面加一条。
->
 > 最后更新：2026-10-16（公司电脑）
 
 ---
+
+# 👤 给人看的一页（回家照这个做，30 秒读完）
+
+> 下面从「🤖 给家里的 AI 助手」开始，是给**家里的 DSH 助手**看的。你只需要读这一页。
+
+## 第 1 步：拉到最新代码
+
+**如果家里项目目录已经是 git 仓库**（做过下面那次设置），只要一条：
+
+```powershell
+cd <家里项目目录>
+git pull
+```
+
+**如果从没设置过**，在这个目录里整段粘贴（一次性，约 1 分钟）：
+
+```powershell
+cd <家里项目目录>
+git init
+git remote add origin https://github.com/ruanxiaoer888/realtime-translator.git
+git fetch origin main
+git reset --hard origin/main
+git branch -M main
+git branch --set-upstream-to=origin/main main
+git config user.name  "xiaoer"
+git config user.email "203290839+ruanxiaoer888@users.noreply.github.com"
+git status
+```
+
+- 这会把**全部代码更新 + 本文件 + `tools/dsh_pull.py`** 一次性拉下来
+- **`libs\`、`tmp\models\`、`记录\`、`settings.json` 不会被碰**（已实测：它们不在仓库里）
+- 最后 `git status` 应该是干净的（有报错就先记下来）
+
+## 第 2 步：把这句话发给家里的 AI（复制即可）
+
+> 项目在 `<家里项目目录>`。请先读仓库根目录的 `HANDOFF.md`
+> （https://raw.githubusercontent.com/ruanxiaoer888/realtime-translator/main/HANDOFF.md ），
+> 然后按里面的指示继续。你在沙箱里跑不了 git，拉取用 `py -3.12 tools/dsh_pull.py --apply`。
+
+（就算第 1 步没做成功、项目里还没有 `HANDOFF.md`，上面那个网址也能直接看到全文 ——
+把网址和这句话一起发给它就行。）
+
+## 第 3 步：收工，让 AI 提交、你只跑一条 push
+
+对 AI 说「把改动提交好并写好进度记录」。它会复制文件、`git add`、`git commit`
+（**本地 git 它能用，只有联网的 fetch/push 不行**），然后给你一条命令，
+你在**你自己的** PowerShell 里执行：
+
+```powershell
+git -C <家里项目目录> push
+```
+
+> 为什么这条必须你做：推送需要你的 GitHub 身份，AI 不应该去读你的凭据。
+
+## 你回家总共只有三个动作
+
+| 时机 | 你要做什么 | 耗时 |
+|---|---|---|
+| 到家 | `git pull`（或上面的 8 条初始化） | 5 秒 |
+| 开工 | 把第 2 步那句话发给 AI | 10 秒 |
+| 收工 | `git push` | 5 秒 |
+
+**其余全部（读文档、拉代码、比对、改代码、跑测试、写进度记录）都是 AI 的活。**
+
+---
+
+# 🤖 给家里的 AI 助手（DSH）
+
+> **接手顺序**：读完本文件 → `py -3.12 tools/dsh_pull.py --apply` 对齐代码
+> → 按第 5 节挑任务开工 → 收工在最后一节「进度记录」最上面加一条。
+>
+> **首次引导**：如果 `tools/dsh_pull.py` 还不存在，用 web_fetch 读
+> `https://raw.githubusercontent.com/ruanxiaoer888/realtime-translator/main/tools/dsh_pull.py`
+> 再用 write 写到本地即可（Python 访问 GitHub 是通的，见第 6 节）。
 
 ## 0. 先知道这 5 件事，能省你半小时
 
