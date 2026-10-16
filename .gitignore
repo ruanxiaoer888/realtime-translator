@@ -71,3 +71,6 @@ env/
 Thumbs.db
 desktop.ini
 *.log
+
+# 便携包里的 Python 安装包目录（家里 git add -A 时最容易误传，25 MB）
+安装Python/
