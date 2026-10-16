@@ -268,39 +268,144 @@ def get_market(name: str) -> dict:
     return MARKETS.get(name, MARKETS["自定义"])
 
 
-def get_glossary(category: str, whisper_lang: str) -> dict:
-    """取某品类在某语种下的术语表 {原文: 中文}。"""
-    cat = CATEGORIES.get(category) or {}
-    return dict(cat.get(whisper_lang, {}))
-
-
-# 直播通用词：跟具体品类无关，主播天天说的那些。
-# 以前这些词混在 MARKETS[..]["asr_prompt"] 里，等于任何品类都带着其它品类的词。
-LIVE_PHRASES = {
-    "pt": ("frete grátis, cupom, promoção, desconto, carrinho amarelo, link na bio, "
-           "preço exclusivo, transmissão ao vivo, seguidores, curtidas, presente"),
-    "es": ("envío gratis, cupón, promoción, descuento, carrito amarillo, enlace en la bio, "
-           "precio exclusivo, transmisión en vivo, seguidores, me gusta, regalo"),
-    "en": ("free shipping, coupon, promotion, discount, yellow cart, link in bio, "
-           "exclusive price, live stream, followers, likes, gift"),
+# ============================================================
+# 市场/平台通用术语（不分品类）
+# ============================================================
+# 2026-10 补：原来只有品类词（五金工具），缺"支付 / 物流清关 / 营销逼单 / 评论区情绪"
+# 这一层，而巴西直播间天天说这些，传统机翻基本全错（Pix→像素、Taxado→税、
+# Remessa Conforme 翻不出来）。词表来源：外部建议（已逐条核对译法，纠正了
+# "Calote→杀猪盘"、"Decepcionado→拔草"这类错译）+ 我们两场真实直播字幕的频次统计。
+LIVE_GLOSSARY = {
+    "pt": {
+        # —— 支付（Pix / Boleto 是巴西特有，机翻必错）——
+        "pix": "Pix 秒付", "boleto": "线下现金支付单",
+        "parcelado": "分期付款", "parcelas": "分期", "sem juros": "免息",
+        "reembolso": "退款", "cartão de crédito": "信用卡支付", "à vista": "全款",
+        # —— 物流与清关（巴西跨境最痛的点）——
+        "frete grátis": "包邮", "taxado": "被海关税了", "taxa": "税费",
+        "remessa conforme": "巴西合规计划", "rastreio": "物流单号",
+        "código de rastreio": "追踪码", "esgotado": "售罄",
+        "despachado": "已发货", "retido na alfândega": "卡在海关",
+        "correios": "巴西邮政", "devolução": "退货",
+        "pronta entrega": "现货秒发", "sob encomenda": "预售",
+        "últimas unidades": "最后几件", "unidades disponíveis": "现货",
+        # —— 营销与逼单 ——
+        "queima de estoque": "清仓", "cupom": "优惠券",
+        "metade do preço": "半价", "só hoje": "仅限今天",
+        "brindes": "赠品", "mimos": "小福利", "oferta relâmpago": "限时秒杀",
+        "golpe": "骗局", "garantia": "保修", "não perca": "别错过",
+        "tchau": "再见", "vale a pena": "值得买",
+        # —— 评论区情绪（用来判断弹幕风向）——
+        "falso": "假货", "réplica": "仿品", "calote": "赖账",
+        "caloteiro": "骗子", "reclame aqui": "投诉平台",
+        # —— 流量与互动 ——
+        "for you": "推荐页", "para você": "推荐页", "flopou": "没流量",
+        "viralizou": "爆了", "seguidor": "粉丝", "seguidores": "粉丝",
+        "compartilha": "分享", "tap tap na tela": "点赞",
+        # —— 规格与配件（真实字幕里的高频词）——
+        "bits": "批头", "torque": "扭矩", "potência": "功率",
+        "watts": "瓦", "volts": "伏", "acessórios": "配件",
+        "extensor": "延长杆", "sockets": "套筒", "tela": "屏幕",
+        "mandril": "夹头", "uso prolongado": "长时间使用",
+    },
+    "es": {
+        "envío gratis": "包邮", "cupón": "优惠券", "descuento": "折扣",
+        "promoción": "促销", "precio exclusivo": "专属价",
+        "transmisión en vivo": "直播", "carrito amarillo": "小黄车",
+        "enlace en la bio": "主页链接", "agotado": "售罄",
+        "reembolso": "退款", "sin intereses": "免息",
+        "meses sin intereses": "免息分期", "parcelas": "分期",
+        "garantía": "保修", "envío": "运费", "seguidores": "粉丝",
+        "me gusta": "点赞", "regalo": "赠品", "torque": "扭矩",
+        "potencia": "功率", "vatios": "瓦", "accesorios": "配件",
+    },
 }
 
 
-def get_asr_prompt(category: str, whisper_lang: str) -> str:
-    """拼某品类在某语种下的识别提示词（塞进 Whisper 的 initial_prompt）。
+def get_glossary(category: str, whisper_lang: str) -> dict:
+    """取某品类在某语种下的术语表 {原文: 中文}。
 
-    只用**当前品类**的术语 + 跟品类无关的直播通用词。
-
-    以前直接用市场级的 asr_prompt，那是四个品类的词全混在一起（427 字符）：
-    卖五金工具时提示词里却有 moto / carro / pneu / academia / camping / pesca。
-    Whisper 的 initial_prompt 会强烈带偏解码，混进无关品类词容易识别出主播
-    根本没说的词（实测直播字幕里出现过"山羊""大使馆""牛奶"这类凭空冒出来的词）。
+    两层合并：市场通用词（LIVE_GLOSSARY）+ 品类词（CATEGORIES，同名时覆盖）。
     """
-    terms = [t for t in get_glossary(category, whisper_lang) if t]
-    generic = LIVE_PHRASES.get(whisper_lang, "")
-    if generic:
-        terms.append(generic)
-    return ", ".join(terms)
+    out = dict(LIVE_GLOSSARY.get(whisper_lang, {}))
+    cat = CATEGORIES.get(category) or {}
+    out.update(cat.get(whisper_lang, {}))
+    return out
+
+
+# ============================================================
+# 识别提示词（Whisper initial_prompt）—— 有硬预算，单独控制
+# ============================================================
+# Whisper 的 initial_prompt 上限是 223 token（faster-whisper: max_length//2 - 1），
+# 而且**超长时保留结尾、丢掉开头**：
+#     prompt.extend(previous_tokens[-(self.max_length // 2 - 1):])   # get_prompt()
+#
+# 2026-10 实测踩坑：术语从 38 条加到 61 条后，提示词涨到 298 token，
+# 开头那批最重要的工具词（furadeira / maleta / broca / sextavado）**被静默丢掉** ——
+# 而真实直播里它们恰好被听错：furadeira→fideira/fuzadeira、maleta→malzinha、
+# broca→blocas、sextavado→estavado。后加的（在尾部）bora/galera/oferta 反而全对。
+#
+# 结论：**重要的词必须放最后**；并且按预算裁剪（从最不重要的开始丢）。
+# 普通词不要放进来 —— 模型自己听得出来，别浪费预算。
+ASR_PROMPT_CHAR_BUDGET = 500      # ≈180 token（实测 843 字符 = 298 token，约 2.83 字符/token）
+
+# 按重要性**从低到高**排列（越靠后越重要，因为截断保尾）。
+ASR_PROMPT_PRIORITY = {
+    "pt": [
+        # —— 最不重要（预算不够时先丢这些）——
+        "curtidas", "seguidores", "presente", "compartilha", "seguidor",
+        "link na bio", "cupom", "desconto", "promoção", "oferta",
+        "oportunidade", "aproveita", "bora", "galera", "pessoal",
+        "garantia", "não perca", "finaliza a compra", "leva o kit para casa",
+        "carrinho amarelo", "preço de barbada", "top demais", "transmissão ao vivo",
+        # —— 规格与配件 ——
+        "bivolt", "voltagem", "potência", "torque", "bits", "acessórios",
+        "extensor", "adaptador", "ponteira", "nível", "trena",
+        # —— 最容易听错的工具词（必须保住，放最后）——
+        "serra circular", "esmerilhadeira", "parafusadeira", "furadeira",
+        "sextavado", "mandril", "martelete", "chave philips", "philips",
+        "chave de fenda", "fenda", "soquete", "alicate", "bateria",
+        "carregador", "maleta", "kit de ferramentas", "broca",
+    ],
+    "es": [
+        "me gusta", "seguidores", "regalo", "enlace en la bio", "cupón",
+        "descuento", "promoción", "envío gratis", "precio exclusivo",
+        "transmisión en vivo", "taladro", "destornillador", "amoladora",
+        "llave inglesa", "juego de dados", "martillo", "cinta métrica",
+        "broca", "mecha", "batería", "cargador", "caja de herramientas",
+    ],
+}
+
+
+def _asr_prompt_terms(category: str, whisper_lang: str) -> tuple[list, list]:
+    """按优先级挑词并裁到预算内；返回 (保留的词, 被丢的词)。"""
+    prio = list(ASR_PROMPT_PRIORITY.get(whisper_lang, []))
+    if not prio:                       # 没配置的语言退回旧行为
+        return [t for t in get_glossary(category, whisper_lang) if t], []
+    gl = get_glossary(category, whisper_lang)
+    terms = [t for t in prio if t in gl]
+    dropped = []
+    while len(", ".join(terms)) > ASR_PROMPT_CHAR_BUDGET and terms:
+        dropped.append(terms.pop(0))   # 从列表头丢 = 丢最不重要的
+    return terms, dropped
+
+
+def asr_prompt_stats(category: str, whisper_lang: str) -> dict:
+    """给测试/自检用：提示词多长、几条、丢了哪些。"""
+    used, dropped = _asr_prompt_terms(category, whisper_lang)
+    text = ", ".join(used)
+    return {"chars": len(text), "terms": len(used), "dropped": dropped,
+            "budget": ASR_PROMPT_CHAR_BUDGET, "text": text}
+
+
+def get_asr_prompt(category: str, whisper_lang: str) -> str:
+    """拼识别提示词（塞进 Whisper 的 initial_prompt）。
+
+    预算与排序的原因见 ASR_PROMPT_CHAR_BUDGET 上方的注释。
+    历史教训：以前是"把整张术语表全塞进去"，词表一大就把重要词挤掉。
+    """
+    used, _ = _asr_prompt_terms(category, whisper_lang)
+    return ", ".join(used)
 
 
 # 反向翻译专用别名：有些中文说法在目标语言里没有独立单词，正向术语表因此没有它，
