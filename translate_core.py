@@ -455,6 +455,16 @@ def _apply_fix(out: str, wrong: str, right: str, protect=()) -> str:
     """
     if not wrong or wrong == right or wrong not in out:
         return out
+    # 单个汉字的错译串误伤率极高，收益却几乎为零：
+    # 下面的替换是全局 str.replace，不看词边界，于是
+    #     '轻'（luz 的错译）  把「重量很轻」改成「重量很灯」
+    #     '槽'（fenda 的错译）把「凹槽」改成「凹一字螺丝刀」
+    #     '鼓'（bateria）     把「电池和鼓」改成「电池和电池」
+    #     '猪'（porca）       把「螺母和猪」改成「螺母和螺母」
+    # 2026-10 用 9 条对抗用例实测：8 条被改坏。单字规则现在只在
+    # 「整段译文正好就是这个字」时才应用。
+    if len(wrong) == 1 and out.strip() != wrong:
+        return out
     masked, slots = _protect(out, protect)
     masked = masked.replace(wrong, right)
     return _restore(masked, slots)

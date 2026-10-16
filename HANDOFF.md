@@ -151,7 +151,7 @@ TikTok Shop 巴西/墨西哥直播用的**实时翻译助手**（Windows 桌面�
 ### 3.3 准确度（真实字幕回放）
 
 有明显错译的句子：**修复前 18/18 → 修复后 1/18**。
-术语资产：五金工具/pt 术语 **117 条**（市场通用词 `LIVE_GLOSSARY` + 品类词）、
+术语资产：五金工具/pt 术语 **121 条**（市场通用词 `LIVE_GLOSSARY` + 品类词）、
 `TERM_FIXES` **65 个词**、`PT_ASR_FIXES`（ASR 误听修正）**12 条**；
 识别提示词单独控预算（**175 token**，Whisper 上限 223）。
 
@@ -175,6 +175,19 @@ TikTok Shop 巴西/墨西哥直播用的**实时翻译助手**（Windows 桌面�
 | 3 | `libs\nvidia\` 不入库，换机不带 | 靠文件夹整体拷贝 |
 | 4 | `verify_p0` 的「单帧 OCR < 2 s」偶发失败 | 环境相关（没装葡语语言包），不用管 |
 | 5 | 同类错译会反复出现（真实直播里总有新口语） | 每次直播后把新错译补进 `TERM_FIXES`/术语表 |
+
+**第三轮全量扫描发现、但还没修的（按性价比排，P1 = 影响正确性）：**
+
+| 优先 | # | 问题 | 怎么推进 |
+|---|---|---|---|
+| P1 | 6 | **15 条 `TERM_FIXES` 是死规则**（键不在该语种术语表里就永不触发）。es/en 专用键属正常，**pt 真死的是 `live` / `transmissão ao vivo` / `material`** —— 正是第二轮特意补的，白补 | 把 3 个词补进 `LIVE_GLOSSARY["pt"]`，或删掉规则 |
+| P1 | 7 | **提示词优先级表和术语表不同步**：`curtidas` / `presente` / `link na bio` / `transmissão ao vivo` 在 `ASR_PROMPT_PRIORITY`（`markets.py:366`）里，但术语表没有 → 永远进不了 prompt | 按 `_asr_prompt_terms` 的过滤结果对齐两边 |
+| P1 | 8 | 两层重名还剩 2 条（`unidades disponíveis` / `últimas unidades`），现在值相同 → **谁改一层就静默失效**（和 `cupom` 同一个坑） | 只保留市场层 |
+| P1 | 9 | 回复助手用不到市场层词：`get_reverse_glossary`（`markets.py:430`）只读 `CATEGORIES` → "优惠券 / 包邮 / 秒杀 / 免息" 翻不成葡语 | 合并 `LIVE_GLOSSARY`（多选项值跳过） |
+| P2 | 10 | `MARKETS[*]["asr_prompt"]` 已是**死配置**（app.py 走 `get_asr_prompt`，只有 `tools/` 老脚本直接引用）→ 两份真相，改一份不生效 | 删掉，或加注释标注"已废弃" |
+| P2 | 11 | **启动白等 3.3 秒**：`start.ps1` 每次 `Get-ChildItem -Recurse` 整个目录（5655 个文件，其中逐个查 `Zone.Identifier` 占 2.5 s，3762 个 .py 大半在 `libs/`） | 只扫根目录 + `tools/`（≈60 个文件）→ 约 50 ms |
+| P2 | 12 | 屏幕 OCR 每帧新建 `mss.mss()`、每帧 `asyncio.run()`；且全程**没有 DPI 感知**（高缩放屏抓的是放大后的模糊图，OCR 精度白丢） | 复用实例；`SetProcessDpiAwareness(2)`（**注意已存 region 坐标会偏移，要重新框一次**） |
+| P3 | 13 | 界面「记录音量」勾选框的值**从没被读**（死 UI）；`translate_cache.json` 无上限；`translate_core` 全局关掉了 TLS 校验（`CERT_NONE`） | 分别实现 / 加上限 / 加注释（公司网络要走中间证书就留着） |
 
 ---
 
@@ -359,6 +372,31 @@ git clone https://github.com/ruanxiaoer888/realtime-translator.git D:\_gh_sync\r
 
 ## 10. 进度记录（AI 每次收工在最上面加一条）
 
+#### 同日第三轮（公司电脑，19:00 后 · 全量扫描 + 6 项修复）
+- **做了什么**：把项目完整重扫一遍（50 个 py，语法 0 错），修掉 **5 个日常会咬人的 bug
+  + 1 个术语误伤**：
+  ① `live_loop` 停止时**从没调 `rec.stop()`** → 回环线程继续录、又没人 `take()`：
+  ≈64 KB/s（230 MB/小时）只涨不降，音频设备还被一直占着，再点「开始听译」就是两个回环流；
+  ② 框选时按 **Esc / 拖得 <8 像素**，主窗口永远停在 `withdraw` 状态（两条路都只 `destroy()` 不回调）
+  → `RegionSelector` 增加 `on_cancel`，两条路都把主窗口恢复；
+  ③ `LoopbackRecorder._error` **没人读**（设备被占用时界面显示"正在听"但永远没字幕）
+  → 听译循环检查并报错退出；
+  ④ srt 时间轴取的是"识别+翻译完成时刻"，**整体晚 2.2 s**（GPU 场实测）
+  → 改用 `t_enq - audio_sec`（这段音频开始说的时刻）；
+  ⑤ `记录\直播字幕.srt` **每场被覆盖** → 改成 `直播字幕-YYYYmmdd-HHMMSS.srt`，
+  同时复制一份 `直播字幕.srt` 作为"最新"，老用法不变；
+  ⑥ 单字错译串（`轻/槽/鼓/猪`）用全局 `str.replace` 会误伤 —— 9 条对抗用例 **8 条被改坏**
+  （"重量很轻"→"重量很灯"、"凹槽"→"凹一字螺丝刀"）→ 单字规则只在**整段译文正好是该字**时才替换。
+  另外修掉 `tools/verify_p0.py` 缺 `libs` 路径 —— 按文档直接跑会
+  `ModuleNotFoundError: numpy`（这个验收脚本其实一直没能按文档跑通）。
+- **实测数据**：`verify_p0` **21/1**（唯一 FAIL 仍是已知的 OCR 帧耗时环境项，见第 4 节 #4）、
+  `verify_features` **39/39**、`verify_e2e` **5/5 无污染**、`check_termfixes` OK、
+  新增对抗用例 **19/19**；术语 121 条 / 提示词 175 token 未变；
+  自检**没有动用户数据**（跑完比对过 `settings.json` 哈希与 `记录\直播字幕.srt` 大小）
+- **卡在哪**：术语层还剩 6 处已知隐患（P1#6~#9、P2#10~#13），见**第 4 节新增的待办表**
+- **下次先做什么**：① 按第 5 节 P0 做家里电脑验证；② 顺手清第 4 节 P1 那 4 条术语层隐患
+  （都是 10 分钟级别的小改，但能防止"改了术语没生效"这种最费时间的排查）
+
 ### 2026-10-16（公司电脑）
 - **做了什么**：诊断延迟根因（单线程 + 实时率 1.28x 过载）→ 识别/翻译移入后台线程 +
   有界队列 + 运行日志；修 faster-whisper 解码回退尖峰（26 次 → 3 次）；
@@ -382,7 +420,7 @@ git clone https://github.com/ruanxiaoer888/realtime-translator.git D:\_gh_sync\r
   500 字符 / 175 token，重要的词排最后；翻译术语表不受这个预算限制）；
   新建 `LIVE_GLOSSARY` 市场通用词（支付 / 物流清关 / 营销逼单 / 评论区情绪 / 规格配件）；
   补 ASR 误听 `estavado → sextavado`；补 7 条市场词错译修正
-- **实测数据**：五金工具/pt 术语 **61 → 117 条**；识别提示词 **298 → 175 token**
+- **实测数据**：五金工具/pt 术语 **61 → 117 条**（补直播热语后 **121 条**）；识别提示词 **298 → 175 token**
   （上限 223，关键工具词全部保住，只丢了 3 个低价值词）；`verify_p0` 22/22
   （OCR 帧耗时项偶发 21/1，环境相关）、保护集回归 9/9、`verify_e2e` 5/5；
   真实句子实测已生效：`frete grátis`→包邮、`garantia`→保修、`golpe`→骗局

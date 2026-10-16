@@ -89,10 +89,17 @@ REPLY_PRESETS = [
 
 
 class RegionSelector:
-    """全屏半透明遮罩，拖拽选择区域。"""
+    """全屏半透明遮罩，拖拽选择区域。
 
-    def __init__(self, parent, callback):
+    必须保证「选中」和「取消」**一定有一个会回调**：框选前主窗口已经 withdraw()，
+    只要漏了回调，主窗口就永远藏在后台，用户会以为程序消失了。
+    原来按 Esc、或拖得小于 8 像素，两条路都只 destroy() 不回调 —— 实测踩到。
+    """
+
+    def __init__(self, parent, callback, on_cancel=None):
         self.callback = callback
+        self.on_cancel = on_cancel
+        self._done = False
         self.win = tk.Toplevel(parent)
         self.win.attributes("-fullscreen", True)
         self.win.attributes("-alpha", 0.25)
@@ -111,7 +118,19 @@ class RegionSelector:
         self.win.bind("<ButtonPress-1>", self.on_press)
         self.win.bind("<B1-Motion>", self.on_drag)
         self.win.bind("<ButtonRelease-1>", self.on_release)
-        self.win.bind("<Escape>", lambda e: self.win.destroy())
+        self.win.bind("<Escape>", self.cancel)
+
+    def cancel(self, _evt=None):
+        """取消框选（Esc / 拖得太小 / 关掉遮罩）：关掉遮罩并把主窗口还回来。"""
+        if self._done:
+            return
+        self._done = True
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        if self.on_cancel:
+            self.on_cancel()
 
     def on_press(self, e):
         self.start = (e.x_root, e.y_root)
@@ -132,9 +151,14 @@ class RegionSelector:
         x0, y0 = self.start
         x1, y1 = e.x_root, e.y_root
         region = (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+        if region[2] <= 8 or region[3] <= 8:
+            self.cancel()        # 误点/拖得太小 = 当作取消，别让主窗口卡在隐藏状态
+            return
+        if self._done:
+            return
+        self._done = True
         self.win.destroy()
-        if region[2] > 8 and region[3] > 8:
-            self.callback(region)
+        self.callback(region)
 
 
 class App:
@@ -163,6 +187,9 @@ class App:
         self._caption_worker = None
         self._subs_lock = threading.Lock()
         self._live_log_fp = None
+        # 本场直播的 srt 文件名（开始听译时按时间生成）。
+        # 原来固定写 记录\直播字幕.srt，第二场会把第一场的字幕直接覆盖掉。
+        self._srt_path = None
 
         self._build_ui()
         # 当前语言配置（由市场决定；换市场就重算）
@@ -549,7 +576,8 @@ class App:
                               font=("Microsoft YaHei UI", 15), wrap="word", relief="flat")
         self.txt_zh.pack(fill="both", expand=True, padx=10, pady=(0, 8))
 
-        ttk.Label(f2, text="提示：字幕已自动录制到「记录」文件夹，可直接给直播录像做字幕。",
+        ttk.Label(f2, text="提示：字幕已自动录制到「记录」文件夹（每场一个文件，"
+                           "最新一份同时存为 直播字幕.srt），可直接给直播录像做字幕。",
                   foreground="#8f93a8").pack(anchor="w", padx=10, pady=(0, 10))
 
         # ---- 回复助手 ----
@@ -743,12 +771,21 @@ class App:
     # ---------------- 实时屏幕翻译 ----------------
     def pick_region(self):
         self.root.withdraw()
-        self.root.after(250, lambda: RegionSelector(self.root, self._region_done))
+        self.root.after(250, lambda: RegionSelector(
+            self.root, self._region_done, self._region_cancel))
 
     def _region_done(self, region):
         self.region = region
         self.lbl_region.config(text=f"区域 {region[0]},{region[1]}  {region[2]}x{region[3]}")
         self.root.deiconify()
+
+    def _region_cancel(self):
+        """取消框选（Esc / 拖太小）：必须把主窗口收回来。
+
+        原来 Esc 只销毁遮罩、不回调，主窗口就一直停在 withdraw 状态。
+        """
+        self.root.deiconify()
+        self.lbl_live.config(text="已取消框选（区域未变）", foreground="#ffd166")
 
     def start_screen(self):
         if self.screen_running:
@@ -836,6 +873,10 @@ class App:
         self.t0 = time.time()
         with self._subs_lock:
             self.subs = []
+        # 每场直播单独一个 srt（时间戳命名），最新的一份另外复制成
+        # 记录\直播字幕.srt，保持以前的用法不变。
+        self._srt_path = os.path.join(
+            LOG_DIR, time.strftime("直播字幕-%Y%m%d-%H%M%S.srt"))
         self.show_overlay()
         self.lbl_live.config(text="正在启动…")
         self.live_thread = threading.Thread(target=self.live_loop, daemon=True)
@@ -900,6 +941,14 @@ class App:
         while self.live_running:
             time.sleep(0.12)
             data = rec.take()
+            # 录音线程失败（回环设备被占用/被禁用）原来只存进 LoopbackRecorder._error
+            # 就没人管了：界面照样显示「正在听：xxx」，却永远等不到字幕。
+            err = getattr(rec, "_error", None)
+            if err is not None:
+                self.ui_queue.put(("error", f"录音失败（系统声音回环不可用）：{err}"))
+                self._live_log("录音失败：%r" % (err,))
+                self.live_running = False
+                break
             if data.size == 0:
                 continue
             piece = seg.push(data)
@@ -909,6 +958,16 @@ class App:
             if seg.speech_level(piece) < seg.silence_rms:
                 continue
             self._submit_caption(seg.trim(piece))
+
+        # 录音必须在这里关掉。原来只有关窗口时才 stop()，于是「停止听译」之后
+        # 回环线程还在往 _chunks 里灌音频、又没人 take()：实测约 64 KB/s
+        # （≈230 MB/小时）只涨不降，而且音频设备一直被占着，再点「开始听译」
+        # 就是两个回环流同时在跑。
+        try:
+            rec.stop()
+        except Exception:
+            pass
+        self.recorder = None
 
         # 收尾：把缓冲里没说完的半句也处理掉，然后等后台线程把队列跑完
         try:
@@ -921,6 +980,14 @@ class App:
         if worker is not None:
             worker.join(timeout=90)
         self._live_log("停止听译")
+        # 本场字幕单独留档，再复制一份「最新」出来（记录\直播字幕.srt）
+        try:
+            if self._srt_path and os.path.exists(self._srt_path):
+                import shutil
+                shutil.copyfile(self._srt_path, os.path.join(LOG_DIR, "直播字幕.srt"))
+                self._live_log("本场字幕：%s" % os.path.basename(self._srt_path))
+        except Exception:
+            pass
         try:
             if self._live_log_fp:
                 self._live_log_fp.close()
@@ -1033,7 +1100,10 @@ class App:
             self._live_log("翻译失败 识别%.2fs 翻译%.2fs 队列等待%.1fs | %s"
                            % (asr_dt, tr_dt, wait, pt[:60]))
             return
-        tick = time.time() - self.t0
+        # 时间轴取「这段音频说完的时刻」，不是「识别+翻译完的时刻」。
+        # 原来用 time.time()，字幕会整体后移一整个识别+翻译的耗时
+        # （GPU 场实测约 2.2 秒、CPU 场 4~5 秒），给直播录像配字幕时对不上嘴。
+        tick = max(0.0, (t_enq - audio_sec) - self.t0)
         with self._subs_lock:
             self.subs.append((tick, pt, zh, audio_sec))
             n = len(self.subs)
@@ -1065,7 +1135,7 @@ class App:
             subs = list(self.subs)
         if not subs:
             return
-        path = os.path.join(LOG_DIR, "直播字幕.srt")
+        path = self._srt_path or os.path.join(LOG_DIR, "直播字幕.srt")
         with open(path, "w", encoding="utf-8") as f:
             for i, (tick, pt, zh, audio_dur) in enumerate(subs, 1):
                 # 结束时间 = 下一句开始时间（若已到末尾则按句长+1秒）

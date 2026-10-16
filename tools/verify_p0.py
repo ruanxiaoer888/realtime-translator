@@ -17,6 +17,9 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 顺序和 app.py 一致：先 libs 再第三方。缺这一行时直接
+# `py -3.12 tools\verify_p0.py` 会 ModuleNotFoundError: numpy（实测踩到）。
+sys.path.insert(0, os.path.join(ROOT, "libs"))
 sys.path.insert(0, ROOT)
 
 import numpy as np  # noqa: E402

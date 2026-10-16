@@ -82,6 +82,9 @@ class LoopbackRecorder:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # 录音线程的失败原因。app.py 的听译循环会读它 —— 原来这个属性只在
+        # 出错时才被创建、且没人读，结果设备被占用时界面显示"正在听"但永远没字幕。
+        self._error: Exception | None = None
 
     def start(self):
         self._stop.clear()
